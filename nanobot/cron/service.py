@@ -11,6 +11,8 @@ from typing import Any
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from croniter import CroniterError, croniter
+
 from .models import (
     DEFAULT_CRON_TIMEZONE,
     CronJobState,
@@ -28,11 +30,19 @@ CronCallback = Callable[[CronTask], Awaitable[None]]
 class CronService:
     """Manage in-memory UTC tasks and invoke one shared callback when due."""
 
-    def __init__(self, callback: CronCallback, workspace: str | Path) -> None:
+    def __init__(
+        self,
+        callback: CronCallback,
+        workspace: str | Path,
+        *,
+        timezone_name: str = DEFAULT_CRON_TIMEZONE,
+    ) -> None:
         if not callable(callback):
             raise TypeError("CronService callback must be callable")
+        _validate_timezone(timezone_name)
         self._callback = callback
         self._storage = JsonCronTaskStorage(workspace)
+        self._timezone = timezone_name
         self._tasks: dict[str, CronTask] = {}
         self._wakeup = asyncio.Event()
         self._scheduler_task: asyncio.Task[None] | None = None
@@ -51,6 +61,12 @@ class CronService:
 
         return self._storage.path
 
+    @property
+    def timezone(self) -> str:
+        """Return the default timezone used by newly registered tasks."""
+
+        return self._timezone
+
     def add_at(
         self,
         when: datetime,
@@ -63,18 +79,19 @@ class CronService:
         chat_id: str | None = None,
         sender_id: str = "cron",
         metadata: Mapping[str, Any] | None = None,
-        tz: str = DEFAULT_CRON_TIMEZONE,
+        tz: str | None = None,
     ) -> CronTask:
         """Register one task to run once at an aware datetime."""
 
+        timezone_name = self._timezone if tz is None else tz
         at_time = _normalize_datetime(when)
         at_ms = _datetime_to_milliseconds(at_time)
-        _validate_timezone(tz)
+        _validate_timezone(timezone_name)
         return self._add_task(
             schedule=CronSchedule(
                 kind="at",
                 at_ms=at_ms,
-                tz=tz,
+                tz=timezone_name,
             ),
             payload=CronPayload(
                 message=message,
@@ -102,7 +119,7 @@ class CronService:
         chat_id: str | None = None,
         sender_id: str = "cron",
         metadata: Mapping[str, Any] | None = None,
-        tz: str = DEFAULT_CRON_TIMEZONE,
+        tz: str | None = None,
     ) -> CronTask:
         """Register one task to run repeatedly after a positive interval."""
 
@@ -110,7 +127,8 @@ class CronService:
             raise TypeError("Cron task interval must be a timedelta")
         if interval.total_seconds() <= 0:
             raise ValueError("Cron task interval must be positive")
-        _validate_timezone(tz)
+        timezone_name = self._timezone if tz is None else tz
+        _validate_timezone(timezone_name)
         every_ms = _timedelta_to_milliseconds(interval)
         next_run_at = (
             _datetime_to_milliseconds(_normalize_datetime(start_at))
@@ -121,7 +139,7 @@ class CronService:
             schedule=CronSchedule(
                 kind="every",
                 every_ms=every_ms,
-                tz=tz,
+                tz=timezone_name,
             ),
             payload=CronPayload(
                 message=message,
@@ -134,6 +152,48 @@ class CronService:
             task_id=task_id,
             name=name,
             next_run_at=next_run_at,
+        )
+
+    def add_cron(
+        self,
+        expression: str,
+        *,
+        task_id: str | None = None,
+        name: str = "",
+        message: str = "",
+        session_key: str = "",
+        channel: str | None = None,
+        chat_id: str | None = None,
+        sender_id: str = "cron",
+        metadata: Mapping[str, Any] | None = None,
+        tz: str | None = None,
+    ) -> CronTask:
+        """Register a task using a cron expression in an IANA timezone."""
+
+        timezone_name = self._timezone if tz is None else tz
+        normalized_expression = _normalize_cron_expression(expression)
+        now_ms = _utc_now_ms()
+        return self._add_task(
+            schedule=CronSchedule(
+                kind="cron",
+                cron=normalized_expression,
+                tz=timezone_name,
+            ),
+            payload=CronPayload(
+                message=message,
+                session_key=session_key,
+                channel=channel,
+                chat_id=chat_id,
+                sender_id=sender_id,
+                metadata=_copy_metadata(metadata),
+            ),
+            task_id=task_id,
+            name=name,
+            next_run_at=calculate_next_cron_run_at(
+                normalized_expression,
+                timezone_name,
+                now_ms,
+            ),
         )
 
     def get(self, task_id: str) -> CronTask | None:
@@ -283,8 +343,32 @@ class CronService:
         if task.schedule.kind == "at":
             task.enabled = False
             task.state.next_run_at = None
-        elif task.schedule.every_ms is not None and task.enabled:
+        elif (
+            task.schedule.kind == "every"
+            and task.schedule.every_ms is not None
+            and task.enabled
+        ):
             task.state.next_run_at = now + task.schedule.every_ms
+        elif (
+            task.schedule.kind == "cron"
+            and task.schedule.cron is not None
+            and task.enabled
+        ):
+            try:
+                task.state.next_run_at = calculate_next_cron_run_at(
+                    task.schedule.cron,
+                    task.schedule.tz,
+                    now,
+                )
+            except ValueError as error:
+                task.enabled = False
+                task.state.next_run_at = None
+                task.state.last_status = "error"
+                task.state.last_error = str(error)
+                logger.warning(
+                    "Cron task disabled because its schedule is invalid (task_id=%s)",
+                    task.id,
+                )
         else:
             task.state.next_run_at = None
         try:
@@ -295,7 +379,36 @@ class CronService:
 
     def _load_tasks(self) -> None:
         tasks = self._storage.load()
+        now_ms = _utc_now_ms()
+        changed = False
+        for task in tasks:
+            if task.schedule.kind != "cron" or not task.enabled:
+                continue
+            try:
+                expression = _normalize_cron_expression(task.schedule.cron)
+                _validate_timezone(task.schedule.tz)
+                # Cron jobs skip missed wall-clock occurrences after downtime.
+                if task.state.next_run_at is None or task.state.next_run_at <= now_ms:
+                    task.state.next_run_at = calculate_next_cron_run_at(
+                        expression,
+                        task.schedule.tz,
+                        now_ms,
+                    )
+                    changed = True
+            except ValueError as error:
+                task.enabled = False
+                task.state.next_run_at = None
+                task.state.last_status = "error"
+                task.state.last_error = str(error)
+                changed = True
+                logger.warning(
+                    "Cron task disabled because its persisted schedule is invalid "
+                    "(task_id=%s)",
+                    task.id,
+                )
         self._tasks = {task.id: task for task in tasks}
+        if changed:
+            self._save_tasks(self._tasks)
         self._loaded = True
 
     def _ensure_loaded(self) -> None:
@@ -336,6 +449,39 @@ def _validate_timezone(value: str) -> None:
         ZoneInfo(value)
     except ZoneInfoNotFoundError as error:
         raise ValueError("Cron task timezone must be a valid IANA timezone") from error
+
+
+def calculate_next_cron_run_at(
+    expression: str,
+    timezone_name: str,
+    now_ms: int,
+) -> int:
+    """Return the first cron occurrence strictly after ``now_ms`` in UTC ms."""
+
+    normalized_expression = _normalize_cron_expression(expression)
+    zone = _timezone(timezone_name)
+    current = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).astimezone(zone)
+    try:
+        next_run = croniter(normalized_expression, current).get_next(datetime)
+    except CroniterError as error:
+        raise ValueError("Cron expression is invalid") from error
+    if next_run.tzinfo is None or next_run.utcoffset() is None:
+        next_run = next_run.replace(tzinfo=zone)
+    return _datetime_to_milliseconds(next_run.astimezone(timezone.utc))
+
+
+def _normalize_cron_expression(value: str | None) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Cron expression must not be empty")
+    expression = value.strip()
+    if not croniter.is_valid(expression):
+        raise ValueError("Cron expression is invalid")
+    return expression
+
+
+def _timezone(value: str) -> ZoneInfo:
+    _validate_timezone(value)
+    return ZoneInfo(value)
 
 
 def _normalize_task_id(task_id: str | None) -> str:

@@ -9,7 +9,7 @@ from .models import (
     CronTaskKind,
 )
 from .publisher import CronMessagePublisher, cron_task_to_inbound_message
-from .service import CronCallback, CronService
+from .service import CronCallback, CronService, calculate_next_cron_run_at
 from .storage import CronStorageError, JsonCronTaskStorage
 
 __all__ = [
@@ -17,6 +17,7 @@ __all__ = [
     "CronJobState",
     "CronMessagePublisher",
     "CronService",
+    "calculate_next_cron_run_at",
     "CronStorageError",
     "CronTask",
     "CronTaskKind",

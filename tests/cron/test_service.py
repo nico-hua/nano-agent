@@ -6,8 +6,10 @@ import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
-from nanobot.cron import CronService, CronTask
+from nanobot.cron import CronService, CronTask, calculate_next_cron_run_at
 
 
 class CronServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -164,6 +166,82 @@ class CronServiceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(self._service.is_running)
 
+    async def test_adds_cron_task_using_the_service_default_timezone(self) -> None:
+        self._service = CronService(
+            _no_op,
+            self._workspace,
+            timezone_name="America/New_York",
+        )
+
+        task = self._service.add_cron("0 9 * * *", task_id="daily")
+
+        self.assertEqual(task.schedule.kind, "cron")
+        self.assertEqual(task.schedule.cron, "0 9 * * *")
+        self.assertEqual(task.schedule.tz, "America/New_York")
+        self.assertIsNotNone(task.state.next_run_at)
+
+    async def test_rejects_invalid_cron_expression(self) -> None:
+        self._service = CronService(_no_op, self._workspace)
+
+        with self.assertRaisesRegex(ValueError, "Cron expression"):
+            self._service.add_cron("not a cron expression")
+
+    async def test_cron_execution_calculates_next_run_from_current_time(self) -> None:
+        self._service = CronService(_no_op, self._workspace)
+        initial_now = _milliseconds(datetime(2026, 9, 15, 0, 0, tzinfo=timezone.utc))
+        execution_now = _milliseconds(datetime(2026, 9, 15, 0, 7, tzinfo=timezone.utc))
+        with patch("nanobot.cron.service._utc_now_ms", return_value=initial_now):
+            task = self._service.add_cron(
+                "*/5 * * * *",
+                task_id="five-minutes",
+                tz="UTC",
+            )
+
+        with patch("nanobot.cron.service._utc_now_ms", return_value=execution_now):
+            self._service._record_execution(task, None)
+
+        self.assertEqual(
+            task.state.next_run_at,
+            _milliseconds(datetime(2026, 9, 15, 0, 10, tzinfo=timezone.utc)),
+        )
+
+
+class CronTimeCalculationTest(unittest.TestCase):
+    def test_calculates_next_cron_occurrence(self) -> None:
+        now_ms = _milliseconds(datetime(2026, 9, 15, 8, 1, tzinfo=timezone.utc))
+
+        result = calculate_next_cron_run_at("*/15 * * * *", "UTC", now_ms)
+
+        self.assertEqual(
+            result,
+            _milliseconds(datetime(2026, 9, 15, 8, 15, tzinfo=timezone.utc)),
+        )
+
+    def test_calculates_across_day_and_month_boundary(self) -> None:
+        zone = ZoneInfo("Asia/Shanghai")
+        now_ms = _milliseconds(datetime(2026, 1, 31, 23, 30, tzinfo=zone))
+
+        result = calculate_next_cron_run_at("0 0 1 * *", "Asia/Shanghai", now_ms)
+
+        self.assertEqual(
+            result,
+            _milliseconds(datetime(2026, 2, 1, 0, 0, tzinfo=zone)),
+        )
+
+    def test_calculates_in_the_requested_timezone(self) -> None:
+        now_ms = _milliseconds(datetime(2026, 1, 1, 13, 30, tzinfo=timezone.utc))
+
+        result = calculate_next_cron_run_at("0 9 * * *", "America/New_York", now_ms)
+
+        self.assertEqual(
+            result,
+            _milliseconds(datetime(2026, 1, 1, 14, 0, tzinfo=timezone.utc)),
+        )
+
 
 async def _no_op(task: CronTask) -> None:
     del task
+
+
+def _milliseconds(value: datetime) -> int:
+    return round(value.timestamp() * 1000)

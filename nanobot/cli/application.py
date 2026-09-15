@@ -68,7 +68,7 @@ class Application:
         tool_loader: ToolLoader | None = None,
         agent_loop_factory: AgentLoopFactory | None = None,
         channel_manager_factory: ChannelManagerFactory = ChannelManager,
-        cron_service_factory: CronServiceFactory = CronService,
+        cron_service_factory: CronServiceFactory | None = None,
         api_service_factory: ApiServiceFactory = HttpApiService,
     ) -> None:
         if not isinstance(config, NanobotConfig):
@@ -80,6 +80,13 @@ class Application:
         provider_factory = provider_factory or create_default_provider_factory().create
         channel_factory = channel_factory or create_default_channel_factory().create
         agent_loop_factory = agent_loop_factory or _create_agent_loop
+        cron_service_factory = cron_service_factory or (
+            lambda callback, workspace: CronService(
+                callback,
+                workspace,
+                timezone_name=config.cron_timezone,
+            )
+        )
         self._message_bus = MessageBus()
         self._cron_publisher = CronMessagePublisher(self._message_bus)
         self._cron_service = cron_service_factory(self._cron_publisher.publish, config.workspace)

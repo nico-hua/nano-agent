@@ -342,7 +342,9 @@ Goal continuation 仍重新进入 AgentLoop，不直接递归调用 Runner，因
 Cron 模块在 **nanobot/cron/**：
 
 - CronSchedule、CronPayload、CronJobState 与 CronTask 将调度定义、路由 payload、运行状态分开。
-- CronService 管理一次性 at 与周期 every 任务，使用 workspace/cron/tasks.json 原子持久化。
+- CronService 管理一次性 at、固定间隔 every 与 Cron 表达式任务，使用 workspace/cron/tasks.json 原子持久化。Cron 表达式由 `croniter` 使用任务保存的 IANA 时区计算，结果统一转换为 UTC 毫秒时间戳；默认时区来自 `cron.timezone`。
+- at/every 继续使用持久化的 `next_run_at`，过期后由调度循环补执行一次；Cron 表达式任务重启时不会补齐停机期间的历史触发点，而是从当前时间计算下一次未来执行。非法持久化表达式会禁用对应任务并记录错误。
+- CronTool 的 `add` 支持 `at`、`every_seconds`、`cron_expr` 三选一，可信默认时区由 ToolContext 注入而不暴露为模型参数；下一次运行时间仍只由 CronService 计算。
 - 到期时 CronService 只调用构造期注入的 callback。
 - CronMessagePublisher 将任务转为 source=cron 的 InboundMessage，并使用内部提示词要求在原会话中执行与报告。
 
@@ -503,7 +505,7 @@ HTTP API
 | MCP 只支持 tools | resources、prompts、OAuth、热加载、复杂重连和二进制结果尚未接入。 |
 | WebSocket 没有 turn_id、断点续传、多媒体或多会话订阅 | 当前用单 session 单连接与重连后读取持久化历史保持简单，无法恢复未保存 delta。 |
 | token 估算不是真实 tokenizer | 去除模型特定依赖，换取稳定可测试性，但预算精度低于生产实现。 |
-| Cron 不支持 cron 表达式、重试或分布式调度 | 当前只实现 at/every 与单进程持久化恢复。 |
+| Cron 不支持重试或分布式调度 | 当前实现 at/every/Cron 表达式与单进程持久化恢复；停机期间错过的 Cron 表达式触发点不会逐次补跑。 |
 | Subagent 状态仅在内存 | 便于说明任务生命周期和回传，但进程重启后不恢复。 |
 | 长期记忆没有专门冲突/去重算法 | 当前依赖整理提示词生成完整替换内容，生产实现通常需要审计与冲突策略。 |
 
@@ -518,12 +520,12 @@ HTTP API
 - JSONL Session、上下文预算裁剪、Session 摘要、持久化 GoalState。
 - MEMORY.md、持久化记忆事件队列与 cursor 恢复。
 - CommandRouter、Goal continuation、Goal 用户输入注入与会话级停止。
-- 可持久化 at/every Cron 任务及其进入 Agent 的链路。
+- 可持久化 at/every/Cron 表达式任务、按时区计算与其进入 Agent 的链路。
 - 同步与后台 Subagent，以及状态与消息回传。
 - QQ Channel、静态认证和流式协议的 WebSocket Channel、本地 HTTP API。
 - 独立 React Web UI：会话列表、Markdown、工具调用展示、停止、认证、有限重连和斜杠命令提示。
 
-最新完整离线 Python 测试为 **528 passed, 10 skipped**；前端构建和测试命令见 **webui/README.md**。
+最新完整离线 Python 测试为 **541 passed, 10 skipped**；前端构建和测试命令见 **webui/README.md**。
 
 ### 暂时跳过的功能
 

@@ -20,7 +20,7 @@ class CronTool(Tool):
         if not isinstance(cron_service, CronService):
             raise TypeError("CronTool requires a CronService")
         self._cron_service = cron_service
-        self._timezone = _resolve_timezone(timezone)
+        self._timezone = timezone
         super().__init__(
             name="cron",
             description="Create, list, or remove scheduled tasks for this conversation.",
@@ -55,6 +55,14 @@ class CronTool(Tool):
                     type="number",
                 ),
                 ToolParameter(
+                    name="cron_expr",
+                    description=(
+                        "A Cron expression using the configured Agent timezone, "
+                        "for example '0 9 * * *'."
+                    ),
+                    type="string",
+                ),
+                ToolParameter(
                     name="task_id",
                     description="The task ID to remove, or an optional ID for a new task.",
                     type="string",
@@ -79,6 +87,7 @@ class CronTool(Tool):
         name: str | None = None,
         at: str | None = None,
         every_seconds: float | None = None,
+        cron_expr: str | None = None,
         task_id: str | None = None,
     ) -> ToolResult:
         """Apply a Cron action using route data bound to this agent turn."""
@@ -97,6 +106,7 @@ class CronTool(Tool):
                 name=name,
                 at=at,
                 every_seconds=every_seconds,
+                cron_expr=cron_expr,
                 task_id=task_id,
             )
         if normalized_action == "list":
@@ -113,14 +123,16 @@ class CronTool(Tool):
         name: str | None,
         at: str | None,
         every_seconds: float | None,
+        cron_expr: str | None,
         task_id: str | None,
     ) -> ToolResult:
         if not isinstance(message, str) or not message.strip():
             return _tool_error("Adding a scheduled task requires a non-empty message")
-        if at is not None and every_seconds is not None:
-            return _tool_error("Provide exactly one of at or every_seconds")
-        if at is None and every_seconds is None:
-            return _tool_error("Adding a scheduled task requires at or every_seconds")
+        schedule_count = sum(
+            value is not None for value in (at, every_seconds, cron_expr)
+        )
+        if schedule_count != 1:
+            return _tool_error("Provide exactly one of at, every_seconds, or cron_expr")
         if task_id is not None and not task_id.strip():
             return _tool_error("Task ID must not be blank")
 
@@ -133,8 +145,9 @@ class CronTool(Tool):
             "metadata": _delivery_metadata(request_context.metadata),
         }
         try:
+            timezone = _resolve_timezone(self._timezone)
             if at is not None:
-                when = _parse_at_time(at, self._timezone)
+                when = _parse_at_time(at, timezone)
                 if isinstance(when, ToolResult):
                     return when
                 task = self._cron_service.add_at(
@@ -142,10 +155,23 @@ class CronTool(Tool):
                     task_id=task_id,
                     name=task_name,
                     message=message.strip(),
-                    tz=self._timezone.key,
+                    tz=timezone.key,
                     **routing,
                 )
                 return ToolResult(content=f"Created one-time task: {task.id}")
+
+            if cron_expr is not None:
+                if not isinstance(cron_expr, str) or not cron_expr.strip():
+                    return _tool_error("Cron_expr must be a non-empty Cron expression")
+                task = self._cron_service.add_cron(
+                    cron_expr.strip(),
+                    task_id=task_id,
+                    name=task_name,
+                    message=message.strip(),
+                    tz=timezone.key,
+                    **routing,
+                )
+                return ToolResult(content=f"Created Cron task: {task.id}")
 
             interval = _parse_interval(every_seconds)
             if isinstance(interval, ToolResult):
@@ -155,7 +181,7 @@ class CronTool(Tool):
                 task_id=task_id,
                 name=task_name,
                 message=message.strip(),
-                tz=self._timezone.key,
+                tz=timezone.key,
                 **routing,
             )
             return ToolResult(content=f"Created recurring task: {task.id}")
@@ -238,9 +264,16 @@ def _delivery_metadata(metadata: Mapping[str, Any]) -> dict[str, str]:
 
 def _schedule_description(task: CronTask) -> str:
     if task.schedule.kind == "at":
-        return f"once at {task.schedule.at_ms}"
-    seconds = (task.schedule.every_ms or 0) / 1_000
-    return f"every {seconds:g} seconds"
+        schedule = f"type=at, at_ms={task.schedule.at_ms}"
+    elif task.schedule.kind == "cron":
+        schedule = f"type=cron, cron_expr={task.schedule.cron}"
+    else:
+        seconds = (task.schedule.every_ms or 0) / 1_000
+        schedule = f"type=every, every_seconds={seconds:g}"
+    return (
+        f"{schedule}, timezone={task.schedule.tz}, "
+        f"next_run_at={task.state.next_run_at}"
+    )
 
 
 def _tool_error(message: str) -> ToolResult:

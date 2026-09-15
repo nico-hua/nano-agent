@@ -37,8 +37,18 @@ class CronToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._tool.name, "cron")
         self.assertEqual(
             tuple(parameter.name for parameter in self._tool.parameters),
-            ("action", "message", "name", "at", "every_seconds", "task_id"),
+            (
+                "action",
+                "message",
+                "name",
+                "at",
+                "every_seconds",
+                "cron_expr",
+                "task_id",
+            ),
         )
+        self.assertNotIn("tz", self._tool.parameters_schema["properties"])
+        self.assertNotIn("timezone", self._tool.parameters_schema["properties"])
         self.assertTrue(CronTool.enabled(ToolContext(cron_service=self._service)))
         self.assertFalse(CronTool.enabled(ToolContext()))
         with self.assertRaisesRegex(ValueError, "CronService"):
@@ -83,13 +93,47 @@ class CronToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(task.schedule.tz, "Asia/Shanghai")
         self.assertEqual(task.schedule.at_ms, 1_893_524_645_000)
 
+    async def test_add_preserves_an_explicit_at_timezone_offset(self) -> None:
+        with _bound_request():
+            result = await self._tool.execute(
+                action="add",
+                message="Send the report.",
+                at="2030-01-02T03:04:05+02:00",
+                task_id="offset-report",
+            )
+
+        task = self._service.get("offset-report")
+        self.assertTrue(result.success)
+        self.assertEqual(task.schedule.at_ms, 1_893_546_245_000)
+
+    async def test_adds_cron_expression_with_the_configured_timezone(self) -> None:
+        with _bound_request():
+            result = await self._tool.execute(
+                action="add",
+                message="Send the daily summary.",
+                cron_expr="0 9 * * *",
+                task_id="daily-summary",
+            )
+
+        task = self._service.get("daily-summary")
+        self.assertTrue(result.success)
+        self.assertEqual(result.content, "Created Cron task: daily-summary")
+        self.assertEqual(task.schedule.kind, "cron")
+        self.assertEqual(task.schedule.cron, "0 9 * * *")
+        self.assertEqual(task.schedule.tz, "Asia/Shanghai")
+        self.assertIsNotNone(task.state.next_run_at)
+
     async def test_add_validates_message_schedule_and_interval(self) -> None:
         invalid_calls = (
             {"message": "", "every_seconds": 10},
             {"message": "Reminder", "at": "2030-01-01T00:00:00", "every_seconds": 10},
+            {"message": "Reminder", "at": "2030-01-01T00:00:00", "cron_expr": "0 9 * * *"},
+            {"message": "Reminder", "every_seconds": 10, "cron_expr": "0 9 * * *"},
             {"message": "Reminder"},
             {"message": "Reminder", "every_seconds": 0},
             {"message": "Reminder", "at": "not-a-time"},
+            {"message": "Reminder", "cron_expr": ""},
+            {"message": "Reminder", "cron_expr": "not a cron expression"},
         )
 
         with _bound_request():
@@ -98,6 +142,19 @@ class CronToolTest(unittest.IsolatedAsyncioTestCase):
                     result = await self._tool.execute(action="add", **arguments)
                     self.assertFalse(result.success)
                     self.assertIsNotNone(result.error)
+
+    async def test_add_returns_error_for_invalid_configured_timezone(self) -> None:
+        tool = CronTool(self._service, "Not/A-Timezone")
+
+        with _bound_request():
+            result = await tool.execute(
+                action="add",
+                message="Reminder",
+                cron_expr="0 9 * * *",
+            )
+
+        self.assertFalse(result.success)
+        self.assertIn("timezone", result.error or "")
 
     async def test_list_only_includes_tasks_for_the_current_session(self) -> None:
         self._service.add_every(
@@ -119,6 +176,27 @@ class CronToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.success)
         self.assertIn("current-task", result.content)
         self.assertNotIn("other-task", result.content)
+        self.assertIn("type=every", result.content)
+        self.assertIn("timezone=Asia/Shanghai", result.content)
+        self.assertIn("next_run_at=", result.content)
+
+    async def test_list_displays_cron_expression_timezone_and_next_run(self) -> None:
+        self._service.add_cron(
+            "0 9 * * *",
+            task_id="daily",
+            message="Daily summary",
+            session_key="session-1",
+            tz="Asia/Shanghai",
+        )
+
+        with _bound_request():
+            result = await self._tool.execute(action="list")
+
+        self.assertTrue(result.success)
+        self.assertIn("type=cron", result.content)
+        self.assertIn("cron_expr=0 9 * * *", result.content)
+        self.assertIn("timezone=Asia/Shanghai", result.content)
+        self.assertIn("next_run_at=", result.content)
 
     async def test_remove_rejects_tasks_from_other_sessions(self) -> None:
         self._service.add_every(

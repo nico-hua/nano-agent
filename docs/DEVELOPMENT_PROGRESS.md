@@ -132,6 +132,8 @@
 
 - [x] 为工具增加显式的最小并行能力：`Tool.parallelizable` 默认 `False`，保持所有现有工具串行；仅将无状态读取类的 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 标记为可并行。写文件、执行命令、Cron、Goal、Message、Spawn 与 MCP 工具继续串行。
 - [x] `AgentRunner` 在单个响应包含多个 tool call 时，通过 `ToolRegistry.get()` 识别可并行工具并使用 `asyncio.gather` 执行；完整并行组结束后才执行剩余串行工具，所有 `ToolMessage` 最终按原始 tool call 顺序写回并保留 `tool_call_id`。工具异常继续由 `ToolRegistry` 转换为 `ToolResult.error`，Runner 取消会传播给未完成的并行工具。补充并发屏障、顺序、blocked、失败和取消测试；最新完整离线测试为 `528 passed, 10 skipped`。
+- [x] 为 `CronSchedule` 和 `CronService` 增加 Cron 表达式调度：使用 `croniter` 基于 IANA 时区计算下一次运行时间，并统一保存为 UTC 毫秒时间戳。Cron 任务执行后从当前时间计算下一次未来触发；重启时保留尚未到期的 `next_run_at`，已过期任务跳过停机期间的历史时间点。非法持久化表达式会禁用任务并记录错误，不会导致服务启动失败；at/every 的原有恢复语义保持不变。
+- [x] 扩展 `CronTool`：`action=add` 支持且仅支持 `at`、`every_seconds`、`cron_expr` 三选一，Cron 表达式和无偏移量的 ISO 时间统一使用 `ToolContext.cron_timezone`，工具 schema 不允许模型覆盖时区。`list` 会显示调度类型、表达式或时间参数、保存的时区及 `next_run_at`。最新完整离线测试为 `541 passed, 10 skipped`。
 
 ## 待开发功能
 
@@ -161,7 +163,7 @@
 - `AgentRunner` 已支持文本流式、顺序工具循环、只读工具批次并行和工具调用进度事件；仍缺并发数量限制、工具依赖调度、Provider fallback、工具结果与 reasoning 流式事件。
 - Provider 已有单次请求超时和有限 transient retry；代理、模型能力声明、可选 SDK 依赖、Retry-After、熔断、fallback、总 deadline 和成本控制仍需统一。
 - Session JSONL 尚无跨进程锁、损坏恢复、迁移、TTL 或缓存淘汰；摘要、记忆仍缺少多级压缩、自动重试、冲突解决和后台任务恢复。
-- Cron 缺少 cron 表达式、编辑/启停、限长批处理、事件归档、可靠投递、重试及分布式调度。
+- Cron 已支持 at、every 和 Cron 表达式；仍缺少编辑/启停、限长批处理、事件归档、可靠投递、重试及分布式调度。
 - Subagent 后台任务尚无持久化、进程重启恢复、自动重试、结果在原始 tool call 中实时注入、LLM 可调用的任务管理工具或多 Agent 协作。
 - `ExecTool` 不是安全沙箱；仍需要操作系统级 sandbox 来限制文件、网络、系统调用与进程权限。
 - QQ 和 WebSocket 之外的 Channel、消息重试、可靠投递、总线持久化、优先级、结构化日志、指标、追踪和外部日志后端尚未实现。

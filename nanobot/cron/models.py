@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-CronTaskKind = Literal["at", "every"]
+CronTaskKind = Literal["at", "every", "cron"]
 DEFAULT_CRON_TIMEZONE = "Asia/Shanghai"
 
 
@@ -18,6 +18,7 @@ class CronSchedule:
     at_ms: int | None = None
     every_ms: int | None = None
     tz: str = DEFAULT_CRON_TIMEZONE
+    cron: str | None = None
 
 
 @dataclass

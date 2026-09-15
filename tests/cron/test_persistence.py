@@ -151,6 +151,76 @@ class CronPersistenceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(restored.state.last_run_at)
         self.assertGreater(restored.state.next_run_at, restored.state.last_run_at)
 
+    async def test_cron_task_is_restored_with_expression_timezone_and_next_run(self) -> None:
+        service = self._service(_no_op)
+        task = service.add_cron(
+            "30 8 * * 1-5",
+            task_id="weekday",
+            tz="Asia/Shanghai",
+            message="Start work.",
+        )
+        expected_next_run = task.state.next_run_at
+        await service.stop()
+
+        restored_service = self._service(_no_op)
+        await restored_service.start()
+        restored = restored_service.get("weekday")
+
+        self.assertEqual(restored.schedule.kind, "cron")
+        self.assertEqual(restored.schedule.cron, "30 8 * * 1-5")
+        self.assertEqual(restored.schedule.tz, "Asia/Shanghai")
+        self.assertEqual(restored.state.next_run_at, expected_next_run)
+
+    async def test_overdue_cron_task_skips_missed_occurrence_after_restart(self) -> None:
+        service = self._service(_no_op)
+        task = service.add_cron("0 0 * * *", task_id="daily", tz="UTC")
+        task.state.next_run_at = round(datetime.now(timezone.utc).timestamp() * 1000) - 1
+        await service.stop()
+
+        called = asyncio.Event()
+
+        async def callback(task: CronTask) -> None:
+            del task
+            called.set()
+
+        restored_service = self._service(callback)
+        await restored_service.start()
+        await asyncio.sleep(0.05)
+        restored = restored_service.get("daily")
+
+        self.assertFalse(called.is_set())
+        self.assertIsNone(restored.state.last_run_at)
+        self.assertGreater(
+            restored.state.next_run_at,
+            round(datetime.now(timezone.utc).timestamp() * 1000),
+        )
+
+    async def test_invalid_persisted_cron_is_disabled_without_crashing_start(self) -> None:
+        storage = JsonCronTaskStorage(self._workspace)
+        storage.save(
+            (
+                CronTask(
+                    id="invalid",
+                    schedule=CronSchedule(kind="cron", cron="invalid", tz="UTC"),
+                    payload=CronPayload(),
+                    state=CronJobState(
+                        next_run_at=round(datetime.now(timezone.utc).timestamp() * 1000) + 60_000
+                    ),
+                ),
+            )
+        )
+
+        service = self._service(_no_op)
+        await service.start()
+        task = service.get("invalid")
+
+        self.assertFalse(task.enabled)
+        self.assertIsNone(task.state.next_run_at)
+        self.assertEqual(task.state.last_status, "error")
+        self.assertIn("Cron expression", task.state.last_error)
+        persisted = JsonCronTaskStorage(self._workspace).load()[0]
+        self.assertFalse(persisted.enabled)
+
     async def test_invalid_json_is_not_overwritten_when_starting(self) -> None:
         task_path = Path(self._workspace) / "cron" / "tasks.json"
         task_path.parent.mkdir(parents=True)

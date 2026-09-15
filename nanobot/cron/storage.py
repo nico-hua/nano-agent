@@ -119,6 +119,7 @@ def _task_to_record(task: CronTask) -> dict[str, Any]:
             "kind": task.schedule.kind,
             "at_ms": task.schedule.at_ms,
             "every_ms": task.schedule.every_ms,
+            "cron": task.schedule.cron,
             "tz": task.schedule.tz,
         },
         "payload": {
@@ -145,19 +146,24 @@ def _task_from_record(record: Any) -> CronTask:
     payload = _required_mapping(record, "payload")
     state = _required_mapping(record, "state")
     kind = schedule.get("kind")
-    if kind not in ("at", "every"):
-        raise CronStorageError("Cron task schedule kind must be 'at' or 'every'")
+    if kind not in ("at", "every", "cron"):
+        raise CronStorageError("Cron task schedule kind must be 'at', 'every', or 'cron'")
 
     at_ms = _optional_integer(schedule, "at_ms")
     every_ms = _optional_integer(schedule, "every_ms")
+    cron_expression = _optional_nullable_string(schedule, "cron")
     if kind == "at" and at_ms is None:
         raise CronStorageError("One-time Cron tasks require an at_ms")
-    if kind == "at" and every_ms is not None:
-        raise CronStorageError("One-time Cron tasks must not define an every_ms")
-    if kind == "every" and at_ms is not None:
-        raise CronStorageError("Recurring Cron tasks must not define an at_ms")
+    if kind == "at" and (every_ms is not None or cron_expression is not None):
+        raise CronStorageError("One-time Cron tasks contain conflicting schedule fields")
+    if kind == "every" and (at_ms is not None or cron_expression is not None):
+        raise CronStorageError("Recurring Cron tasks contain conflicting schedule fields")
     if kind == "every" and (every_ms is None or every_ms <= 0):
         raise CronStorageError("Recurring Cron tasks require a positive every_ms")
+    if kind == "cron" and (at_ms is not None or every_ms is not None):
+        raise CronStorageError("Cron expression tasks contain conflicting schedule fields")
+    if kind == "cron" and cron_expression is None:
+        raise CronStorageError("Cron expression tasks require a cron expression")
 
     enabled = _required_bool(record, "enabled")
     next_run_at = _optional_integer(state, "next_run_at")
@@ -169,6 +175,7 @@ def _task_from_record(record: Any) -> CronTask:
             kind=kind,
             at_ms=at_ms,
             every_ms=every_ms,
+            cron=cron_expression,
             tz=_timezone_from_record(schedule),
         ),
         payload=CronPayload(
