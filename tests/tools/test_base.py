@@ -2,6 +2,23 @@ import unittest
 from typing import Any
 
 from nanobot.tools import Tool, ToolContext, ToolParameter, ToolResult
+from nanobot.tools.builtin import (
+    ApplyPatchTool,
+    CreateGoalTool,
+    CronTool,
+    EditFileTool,
+    ExecTool,
+    FindFilesTool,
+    GrepTool,
+    ListDirTool,
+    MessageTool,
+    ReadFileTool,
+    SpawnTool,
+    UpdateGoalTool,
+    WebFetchTool,
+    WebSearchTool,
+    WriteFileTool,
+)
 from tests.tools.fakes import WeatherTool
 
 
@@ -45,6 +62,35 @@ class ToolParameterTest(unittest.TestCase):
 
 
 class ToolTest(unittest.TestCase):
+    def test_tools_are_not_parallelizable_by_default(self) -> None:
+        tool = EchoTool(name="echo", description="Echo arguments.")
+
+        self.assertFalse(tool.parallelizable)
+
+    def test_only_explicit_read_tools_are_parallelizable(self) -> None:
+        parallelizable_tools = (
+            ReadFileTool,
+            ListDirTool,
+            FindFilesTool,
+            GrepTool,
+            WebSearchTool,
+            WebFetchTool,
+        )
+        serial_tools = (
+            WriteFileTool,
+            EditFileTool,
+            ApplyPatchTool,
+            ExecTool,
+            CronTool,
+            CreateGoalTool,
+            UpdateGoalTool,
+            MessageTool,
+            SpawnTool,
+        )
+
+        self.assertTrue(all(tool.parallelizable for tool in parallelizable_tools))
+        self.assertTrue(all(not tool.parallelizable for tool in serial_tools))
+
     def test_tool_is_abstract(self) -> None:
         with self.assertRaises(TypeError):
             Tool(

@@ -99,7 +99,7 @@ class AgentRunResult:
 
 
 class AgentRunner:
-    """Run provider completions and sequential tool calls to a response boundary."""
+    """Run provider completions and ordered tool-call batches to a response boundary."""
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         """Run tool-call rounds until a final response or iteration boundary."""
@@ -117,7 +117,7 @@ class AgentRunner:
         *,
         streaming: bool,
     ) -> AgentRunResult:
-        """Execute the shared sequential tool loop for one provider request mode."""
+        """Execute the shared tool loop for one provider request mode."""
 
         conversation = list(spec.messages)
         tools_used: list[ToolCallRequest] = []
@@ -187,37 +187,17 @@ class AgentRunner:
                 )
             )
             tools_used.extend(response.tool_calls)
-            injected_messages: list[HumanMessage] = []
-            for tool_call in response.tool_calls:
-                if tool_call.name in blocked_tool_names:
-                    logger.warning("Blocked requested tool (name=%s)", tool_call.name)
-                    conversation.append(
-                        ToolMessage(
-                            content=(
-                                "Error: Tool is not available in this agent run: "
-                                f"{tool_call.name}"
-                            ),
-                            tool_call_id=tool_call.id,
-                        )
-                    )
-                else:
-                    logger.info("Executing requested tool (name=%s)", tool_call.name)
-                    if streaming:
-                        await _notify_tool_call(spec, tool_call)
-                    result = await spec.tool_registry.execute(
-                        tool_call.name,
-                        tool_call.arguments,
-                    )
-                    conversation.append(
-                        ToolMessage(
-                            content=result.content,
-                            tool_call_id=tool_call.id,
-                        )
-                    )
-            injected_messages.extend(await _take_injected_messages(spec))
+            conversation.extend(
+                await _execute_tool_batch(
+                    spec,
+                    response.tool_calls,
+                    blocked_tool_names,
+                    streaming=streaming,
+                )
+            )
             # Keep each assistant tool-call batch contiguous. Provider protocols
             # require every requested tool result before the next user message.
-            conversation.extend(injected_messages)
+            conversation.extend(await _take_injected_messages(spec))
 
         # Every tool-call batch above is complete at this point: each assistant
         # tool request has its matching ToolMessage.  Return that durable
@@ -259,6 +239,93 @@ async def _take_injected_messages(spec: AgentRunSpec) -> tuple[HumanMessage, ...
     if not all(isinstance(message, HumanMessage) for message in messages):
         raise TypeError("injection_callback must return only HumanMessage instances")
     return tuple(messages)
+
+
+async def _execute_tool_batch(
+    spec: AgentRunSpec,
+    tool_calls: Sequence[ToolCallRequest],
+    blocked_tool_names: set[str],
+    *,
+    streaming: bool,
+) -> tuple[ToolMessage, ...]:
+    """Execute one complete tool batch and preserve provider-requested order."""
+
+    result_contents = [""] * len(tool_calls)
+    parallel_indexes: list[int] = []
+    serial_indexes: list[int] = []
+
+    for index, tool_call in enumerate(tool_calls):
+        tool = spec.tool_registry.get(tool_call.name)
+        if (
+            len(tool_calls) > 1
+            and tool_call.name not in blocked_tool_names
+            and tool is not None
+            and tool.parallelizable
+        ):
+            parallel_indexes.append(index)
+        else:
+            serial_indexes.append(index)
+
+    # Notify in provider order before scheduling the concurrent reads. This
+    # keeps visible tool-call events deterministic without serializing the work.
+    for index in parallel_indexes:
+        tool_call = tool_calls[index]
+        logger.info("Executing requested tool (name=%s)", tool_call.name)
+        if streaming:
+            await _notify_tool_call(spec, tool_call)
+
+    if parallel_indexes:
+        parallel_results = await asyncio.gather(
+            *(
+                spec.tool_registry.execute(
+                    tool_calls[index].name,
+                    tool_calls[index].arguments,
+                )
+                for index in parallel_indexes
+            )
+        )
+        for index, result in zip(parallel_indexes, parallel_results, strict=True):
+            result_contents[index] = result.content
+
+    # Side-effecting, blocked, unknown, and otherwise non-parallel tools run
+    # only after the complete parallel group has settled.
+    for index in serial_indexes:
+        tool_call = tool_calls[index]
+        result_contents[index] = await _execute_serial_tool_call(
+            spec,
+            tool_call,
+            blocked_tool_names,
+            streaming=streaming,
+        )
+
+    return tuple(
+        ToolMessage(content=content, tool_call_id=tool_call.id)
+        for tool_call, content in zip(tool_calls, result_contents, strict=True)
+    )
+
+
+async def _execute_serial_tool_call(
+    spec: AgentRunSpec,
+    tool_call: ToolCallRequest,
+    blocked_tool_names: set[str],
+    *,
+    streaming: bool,
+) -> str:
+    if tool_call.name in blocked_tool_names:
+        logger.warning("Blocked requested tool (name=%s)", tool_call.name)
+        return (
+            "Error: Tool is not available in this agent run: "
+            f"{tool_call.name}"
+        )
+
+    logger.info("Executing requested tool (name=%s)", tool_call.name)
+    if streaming:
+        await _notify_tool_call(spec, tool_call)
+    result = await spec.tool_registry.execute(
+        tool_call.name,
+        tool_call.arguments,
+    )
+    return result.content
 
 
 async def _notify_tool_call(

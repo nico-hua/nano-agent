@@ -158,8 +158,9 @@ CommandRouter 在调用 Runner 前拦截斜杠命令。普通消息由 ContextBu
 1. 调用 Provider.complete，或通过 Provider.stream 接收文本 delta。
 2. 没有工具调用时，追加最终 AIMessage；Goal 模式下可检查待注入用户输入，存在时继续下一次模型调用。
 3. 有工具调用时，先追加带 ToolCallRequest 的 AIMessage。
-4. 逐个通过 ToolRegistry.execute 执行，并为每个调用追加 ToolMessage，包括被禁止、参数错误和执行失败产生的工具错误。
-5. 整个工具批次完成后，Goal 模式才允许追加合并后的用户输入，保证 tool call 与 tool result 不会被打断。
+4. 单个 tool call 继续通过 ToolRegistry.execute 串行执行。多个 tool call 会先通过 ToolRegistry.get 检查 `parallelizable`：显式允许且未被 blocked 的工具由 `asyncio.gather` 并发执行；完整并行组结束后，再按原顺序执行副作用、未知、blocked 或其他不可并行工具。
+5. Runner 收集完整批次结果，再严格按模型原始 tool call 顺序追加 ToolMessage；每条结果保留对应 `tool_call_id`，工具异常仍由 ToolRegistry 转换为 ToolResult.error。
+6. 整个工具批次完成后，Goal 模式才允许追加合并后的用户输入，保证 tool call 与 tool result 不会被打断。
 
 达到 max_iterations 时，Runner 返回 stop_reason 为 **max_iterations** 的正常结果，不会抛出未处理异常或制造半截消息链。AgentLoop 决定普通会话提示达到上限，还是 Goal 创建 continuation。
 
@@ -169,7 +170,7 @@ CommandRouter 在调用 Runner 前拦截斜杠命令。普通消息由 ContextBu
 
 | 场景 | AgentLoop 行为 | AgentRunner 行为 | 结果处理 |
 | --- | --- | --- | --- |
-| 普通非流式 turn | session 锁、构建上下文、保存完整结果 | complete 与顺序工具循环 | 普通 OutboundMessage |
+| 普通非流式 turn | session 锁、构建上下文、保存完整结果 | complete 与有序工具批次 | 普通 OutboundMessage |
 | WebSocket 流式 turn | 增加 delta/tool_call 回调 | stream 与同一工具循环 | delta/tool_call 后一次 turn_end |
 | Goal turn | source 为 goal，启用队列和权限限制 | 工具批次边界可注入用户输入 | 更新 GoalState，必要时继续 |
 | /stop | 不等待 session 锁 | 取消对应 asyncio task | 流式发送 cancelled turn_end，不保存不完整 turn |
@@ -213,9 +214,9 @@ Provider 层在 **nanobot/providers/**。它只负责将不同模型厂商的请
 
 ### 5.1 Tool、ToolResult、ToolRegistry 与 ToolLoader
 
-**Tool**（**nanobot/tools/base.py**）定义 name、description、ToolParameter、execute，并能生成 OpenAI 与 Anthropic 的工具 schema。
+**Tool**（**nanobot/tools/base.py**）定义 name、description、ToolParameter、execute 和 `parallelizable`，并能生成 OpenAI 与 Anthropic 的工具 schema。`parallelizable` 默认 `False`，工具必须显式声明可并行，避免状态修改或外部副作用被意外重排。
 
-**ToolResult** 使用 success、content 和可选 error 表示结果。**ToolRegistry**（**nanobot/tools/registry.py**）按稳定注册顺序保存工具、校验模型参数、调用 execute，并将未知工具、非法参数和执行异常转换为 ToolResult，而不是打断整个 Runner。
+**ToolResult** 使用 success、content 和可选 error 表示结果。**ToolRegistry**（**nanobot/tools/registry.py**）按稳定注册顺序保存工具、校验模型参数、调用 execute，并将未知工具、非法参数和执行异常转换为 ToolResult，而不是打断整个 Runner。ToolRegistry 不负责任务调度；是否并行由 AgentRunner 针对当前模型返回的完整工具批次决定。
 
 **ToolLoader**（**nanobot/tools/loader.py**）扫描 **nanobot.tools.builtin**，按类名稳定排序，依次调用 Tool.enabled、Tool.create 和 registry.register。工具创建期的依赖检查集中在这里，Runner 只看到已可用工具。
 
@@ -229,7 +230,7 @@ Provider 层在 **nanobot/providers/**。它只负责将不同模型厂商的请
 
 ### 5.3 builtin、MCP 与主动消息
 
-当前 builtin 工具包括 workspace 文件操作、exec、cron、goal、spawn、message、web_search 和 web_fetch。文件工具集中在 **nanobot/tools/builtin/filesystem.py**，网络工具集中在 **nanobot/tools/builtin/web.py**。
+当前 builtin 工具包括 workspace 文件操作、exec、cron、goal、spawn、message、web_search 和 web_fetch。文件工具集中在 **nanobot/tools/builtin/filesystem.py**，网络工具集中在 **nanobot/tools/builtin/web.py**。第一版仅允许 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 并行；写入、命令、消息、任务管理与 MCP 工具保持串行。
 
 MCP 工具不同于 builtin：**MCPProvider**（**nanobot/mcp/provider.py**）在 Application 启动时按配置连接 stdio、SSE 或 Streamable HTTP server，列出工具后由 **MCPToolWrapper**（**nanobot/mcp/tool.py**）动态注册到共享 ToolRegistry。当前实现仅处理 MCP tools。
 
@@ -475,7 +476,7 @@ HTTP API
 
 继续开发时必须保持以下约束：
 
-1. **工具消息顺序完整。** 每个 AIMessage 的 tool_calls 必须有按顺序追加的 ToolMessage；Goal 用户输入只能在完整工具批次后注入。
+1. **工具消息顺序完整。** 并行执行不能改变协议顺序；每个 AIMessage 的 tool_calls 必须有按原始顺序追加且 ID 对应的 ToolMessage，Goal 用户输入只能在完整工具批次后注入。
 2. **Session 不保存不完整 turn。** AgentLoop 只在 AgentRunner 返回后保存 user、assistant、tool 消息；取消、Provider 错误和未完成工具批次不落盘。
 3. **system prompt 不写入 Session。** system prompt、长期记忆、Skills 和摘要都是每次请求重建的上下文。
 4. **同一 Session 串行。** 普通 turn 的读历史、模型调用和保存受同一 session lock 保护；不同 session 不得混入消息。
@@ -495,6 +496,7 @@ HTTP API
 | 当前取舍 | 原因与影响 |
 | --- | --- |
 | 仅有有限 Provider retry，没有 fallback、Retry-After、熔断或全局 Agent deadline | 当前为每次 Provider `complete`/`stream` 尝试提供可配置超时和受控 transient retry；生产环境仍需容量信号、熔断、模型切换、总请求 deadline 和成本控制。 |
+| 工具并行仅由静态属性控制 | 当前仅并行明确标记的只读工具，没有并发数量限制、依赖分析或资源配额；生产环境需要按服务容量和工具关系调度。 |
 | 没有跨进程 Session 锁 | 当前单进程 asyncio lock 足够说明顺序语义；多进程需文件锁、数据库事务或分布式协调。 |
 | 没有 Pairing、登录或角色权限 | 当前只有面向本地服务的静态 token，不能当作完整身份授权。 |
 | HTTP API 不完整兼容 OpenAI | 只提供本项目所需消息与 Session 读取接口，未实现 HTTP 流式、完整协议和异步任务查询。 |
@@ -512,7 +514,7 @@ HTTP API
 以 [开发进度](DEVELOPMENT_PROGRESS.md) 为准，当前已完成：
 
 - Provider 抽象、OpenAI-compatible 与 Anthropic-compatible 实现、文本流式回调、单次请求超时、有限 transient retry 与统一错误结果。
-- Tool 基础设施、builtin 文件/命令/网络/消息/Goal/Cron/Spawn 工具和 MCP 动态工具。
+- Tool 基础设施、builtin 文件/命令/网络/消息/Goal/Cron/Spawn 工具、MCP 动态工具，以及显式只读工具的有序批次并行。
 - JSONL Session、上下文预算裁剪、Session 摘要、持久化 GoalState。
 - MEMORY.md、持久化记忆事件队列与 cursor 恢复。
 - CommandRouter、Goal continuation、Goal 用户输入注入与会话级停止。
@@ -521,7 +523,7 @@ HTTP API
 - QQ Channel、静态认证和流式协议的 WebSocket Channel、本地 HTTP API。
 - 独立 React Web UI：会话列表、Markdown、工具调用展示、停止、认证、有限重连和斜杠命令提示。
 
-最新完整离线 Python 测试为 **521 passed, 10 skipped**；前端构建和测试命令见 **webui/README.md**。
+最新完整离线 Python 测试为 **528 passed, 10 skipped**；前端构建和测试命令见 **webui/README.md**。
 
 ### 暂时跳过的功能
 
@@ -532,7 +534,7 @@ HTTP API
 - HTTP 流式响应、异步任务查询、完整 OpenAI API 兼容；
 - WebSocket 多会话订阅、广播、断点续传和多媒体；
 - MCP resources、prompts、OAuth、重连、热加载与插件；
-- Provider fallback、Retry-After/熔断、并行工具、真实 tokenizer、长期记忆冲突处理；
+- Provider fallback、Retry-After/熔断、工具并发数量限制与依赖调度、真实 tokenizer、长期记忆冲突处理；
 - 跨进程 Session 协调、后台任务持久化、生产级 sandbox、可观测性和可靠投递。
 
 ### 推荐扩展路径

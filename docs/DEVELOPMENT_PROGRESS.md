@@ -128,6 +128,11 @@
 - [x] 建立统一 Provider 错误与有限重试边界：`LLMResponse` 新增 `error`，最终 Provider 失败统一返回 `finish_reason="error"` 的安全结果，而非将普通异常交给 Runner；`asyncio.CancelledError` 原样传播。`provider.max_retries` 默认 `2`，表示一次请求最多总计 3 次尝试，间隔为 1、2 秒；仅重试 timeout、连接错误、HTTP 429/5xx 和显式 `ProviderTransientError`，并关闭 SDK 自带重试，避免重试次数叠加。
 - [x] 流式响应仅在尚未对外发布 delta 时重试；已有可见 delta、回调失败或客户端输出失败均不重放。`AgentRunner` 收到 `LLMResponse.error` 后不执行工具或追加消息；`AgentLoop` 仅返回一个错误结果（WebSocket 为 `event="error"`），不保存当前 Session、不触发记忆、压缩、Goal continuation 或 max-iteration continuation。补充 Provider、Runner、Loop、WebSocket 和配置测试；最新完整离线测试为 `521 passed, 10 skipped`。
 
+### 2026-09-15
+
+- [x] 为工具增加显式的最小并行能力：`Tool.parallelizable` 默认 `False`，保持所有现有工具串行；仅将无状态读取类的 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 标记为可并行。写文件、执行命令、Cron、Goal、Message、Spawn 与 MCP 工具继续串行。
+- [x] `AgentRunner` 在单个响应包含多个 tool call 时，通过 `ToolRegistry.get()` 识别可并行工具并使用 `asyncio.gather` 执行；完整并行组结束后才执行剩余串行工具，所有 `ToolMessage` 最终按原始 tool call 顺序写回并保留 `tool_call_id`。工具异常继续由 `ToolRegistry` 转换为 `ToolResult.error`，Runner 取消会传播给未完成的并行工具。补充并发屏障、顺序、blocked、失败和取消测试；最新完整离线测试为 `528 passed, 10 skipped`。
+
 ## 待开发功能
 
 ### 核心开发工具
@@ -153,7 +158,7 @@
 ## 待优化项
 
 - `ToolParameter` 目前只支持 string、integer、number、boolean；数组、嵌套对象、枚举、默认值和完整 JSON Schema 校验尚未具备。
-- `AgentRunner` 已支持文本流式、顺序工具循环和工具调用进度事件；仍缺并行工具调度、Provider fallback、工具结果与 reasoning 流式事件。
+- `AgentRunner` 已支持文本流式、顺序工具循环、只读工具批次并行和工具调用进度事件；仍缺并发数量限制、工具依赖调度、Provider fallback、工具结果与 reasoning 流式事件。
 - Provider 已有单次请求超时和有限 transient retry；代理、模型能力声明、可选 SDK 依赖、Retry-After、熔断、fallback、总 deadline 和成本控制仍需统一。
 - Session JSONL 尚无跨进程锁、损坏恢复、迁移、TTL 或缓存淘汰；摘要、记忆仍缺少多级压缩、自动重试、冲突解决和后台任务恢复。
 - Cron 缺少 cron 表达式、编辑/启停、限长批处理、事件归档、可靠投递、重试及分布式调度。

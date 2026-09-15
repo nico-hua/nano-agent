@@ -71,6 +71,7 @@ class _PatchError(Exception):
 class ReadFileTool(Tool):
     """Read a range of lines from a text file inside one workspace."""
 
+    parallelizable = True
     DEFAULT_LIMIT = 200
     MAX_LIMIT = 1000
 
@@ -367,6 +368,7 @@ class ApplyPatchTool(Tool):
 class ListDirTool(Tool):
     """List files and directories inside one workspace directory."""
 
+    parallelizable = True
     DEFAULT_LIMIT = 200
     MAX_LIMIT = 1000
 
@@ -947,6 +949,7 @@ def _list_directory(path: Path, recursive: bool, limit: int) -> list[str]:
 class FindFilesTool(Tool):
     """Find workspace files by a filename or glob pattern without reading them."""
 
+    parallelizable = True
     DEFAULT_LIMIT = 200
     MAX_LIMIT = 1000
 
@@ -1170,6 +1173,7 @@ def _matches_glob(path: str, pattern_parts: tuple[str, ...]) -> bool:
 class GrepTool(Tool):
     """Search UTF-8 workspace files line by line with a regular expression."""
 
+    parallelizable = True
     DEFAULT_LIMIT = 100
     MAX_LIMIT = 1000
     MAX_LINE_CHARACTERS = 500

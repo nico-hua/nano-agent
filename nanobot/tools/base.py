@@ -45,6 +45,10 @@ class ToolParameter:
 class Tool(ABC):
     """Base class for a callable tool and its provider schemas."""
 
+    # Tools opt in explicitly. State-changing and externally constrained tools
+    # keep the serial default so model-provided call order remains meaningful.
+    parallelizable: bool = False
+
     def __init__(
         self,
         name: str,

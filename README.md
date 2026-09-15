@@ -8,7 +8,7 @@
 - Provider 无关的消息、工具调用和 `LLMResponse` 模型。
 - 内置 workspace 工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`find_files`、`grep`、`apply_patch` 与 `exec` 集中位于 `tools/builtin/filesystem.py`，共用 workspace 路径安全边界。`find_files` 按名称或 glob 查找文件，`grep` 以正则搜索 UTF-8 文本，`apply_patch` 使用严格的结构化补丁精确新增、修改或删除文本文件；三者均限制结果规模、跳过常见生成目录，并拒绝越过 workspace 或通过符号链接逃逸。网络工具统一位于 `tools/builtin/web.py`：`web_search` 通过 Tavily 返回有限的标题、URL 与摘要，`web_fetch` 以受限的 HTTP(S) 请求读取一个已知公开页面并提取文本；后者拒绝本机和内网目标、限制重定向与响应大小，且不执行页面 JavaScript。`message` 工具经共享 `MessageBus` 向当前 RequestContext 所属渠道主动发送一条文本消息，不能由模型改写目标路由；QQ 会将其作为主动消息处理，不复用入站 `message_id`。
 - `ToolRegistry`、`ToolLoader` 与 MCP tools 接入；MCP 支持 stdio、SSE 和 Streamable HTTP。
-- 支持文本流式与非流式调用的 AgentRunner 工具调用循环，以及基于 `asyncio.Queue` 的 MessageBus；流式工具执行前可单独通知调用方工具名称和参数。
+- 支持文本流式与非流式调用的 AgentRunner 工具调用循环，以及基于 `asyncio.Queue` 的 MessageBus；流式工具执行前可单独通知调用方工具名称和参数。多个 tool call 中，显式标记为可并行的 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 会并发执行，副作用工具仍按顺序执行，最终 tool result 始终按模型请求顺序写回。
 - QQ 文本 Channel、最小 WebSocket Channel，以及独立的 React + TypeScript Web UI；均复用 ChannelManager、Application 生命周期和 `python -m nanobot` CLI 入口。WebSocket 默认仅监听本机，连接后经现有 `MessageBus` 与 AgentLoop 通信；Web UI 可查看、切换和新建本地持久化会话，并可停止当前 session 的流式生成。
 - 基于 `aiohttp` 的最小本地 HTTP API：`GET /health`、`POST /v1/messages`、`GET /v1/sessions` 与 `GET /v1/sessions/{session_id}`。写请求经 `AgentLoop` 处理并同步返回结果；只读会话接口经 `SessionManager` 返回可见历史，保留 Session、命令、目标模式和工具调用边界。
 - workspace 下的 JSONL Session 持久化、请求侧上下文裁剪和 Session 摘要压缩。当前 turn 仅在 `AgentRunner` 成功返回完整结果后原子保存，失败或取消不会留下半截历史。
@@ -125,7 +125,7 @@ npm run build
 
 ## 有意留到后续的能力
 
-- 并行工具调度、Provider fallback/Retry-After/熔断，以及工具执行结果和 reasoning 的流式事件。
+- 工具并发数量限制与依赖调度、Provider fallback/Retry-After/熔断，以及工具执行结果和 reasoning 的流式事件。
 - 真实 tokenizer、上下文摘要的多级策略和长期记忆冲突解决。
 - 多进程/分布式锁、记忆事件归档与可靠任务恢复。
 - 除 QQ 和 WebSocket 外的真实 Channel、消息可靠投递与总线持久化。

@@ -112,6 +112,7 @@ class _ReadableHTMLParser(HTMLParser):
 class WebFetchTool(Tool):
     """Fetch a public HTTP(S) page and return bounded, readable text only."""
 
+    parallelizable = True
     REQUEST_TIMEOUT_SECONDS = 10
     MAX_RESPONSE_BYTES = 1_000_000
     MAX_TEXT_CHARS = 20_000
@@ -428,6 +429,7 @@ def _tool_error(message: str) -> ToolResult:
 class WebSearchTool(Tool):
     """Search the public web through Tavily and return bounded source snippets."""
 
+    parallelizable = True
     TAVILY_SEARCH_URL = "https://api.tavily.com/search"
     REQUEST_TIMEOUT_SECONDS = 10
     DEFAULT_MAX_RESULTS = 5
