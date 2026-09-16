@@ -1,9 +1,9 @@
 
 # Project Purpose
 
-This repository is an educational reimplementation of an Agent system inspired by nanobot.
+Nano Agent is an educational reimplementation of an Agent system inspired by nanobot.
 
-The goal is not to reproduce nanobot 1:1.
+The goal of Nano Agent is not to reproduce nanobot 1:1.
 The primary goals are:
 
 1. Understand the architecture and design decisions of a production Agent system.

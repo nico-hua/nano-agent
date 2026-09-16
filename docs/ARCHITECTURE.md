@@ -1,4 +1,4 @@
-# Nanobot 架构说明
+# Nano Agent 架构说明
 
 本文面向继续开发、审查或学习本仓库的开发者。内容以当前源码为准，重点解释调用链、数据流、状态归属和设计边界，而不是逐行讲解实现。
 
@@ -10,7 +10,7 @@
 
 ## 1. 系统整体结构
 
-Nanobot 是一个单进程、异步运行的 Agent 学习项目。它将外部消息适配、Agent 运行、模型协议、工具执行、会话持久化和前端入口拆开，让新增 Channel、工具或运行模式时不需要在每个入口复制业务逻辑。
+Nano Agent 是一个单进程、异步运行的 Agent 学习项目。它将外部消息适配、Agent 运行、模型协议、工具执行、会话持久化和前端入口拆开，让新增 Channel、工具或运行模式时不需要在每个入口复制业务逻辑。
 
 启动入口在 **nanobot/cli/main.py**。CLI 读取 **.nanobot/nanobot.json** 并创建 **nanobot/cli/application.py** 中的 **Application**。Application 是组合根：它创建 Provider、ToolRegistry、MCPProvider、SessionManager、AgentLoop、MessageBus、默认 Channel、CronService、HTTP API 与 SubagentManager，但不处理某一条具体消息的业务决策。
 

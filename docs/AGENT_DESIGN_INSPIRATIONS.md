@@ -5,7 +5,7 @@
 
 ## 1. 调研目的与当前项目基线
 
-本文不是完整功能对比，也不建议把 OpenClaw 或 Hermes Agent 逐项复制到 Nanobot。重点是寻找当前教学项目尚未具备、但能帮助理解 Agent 核心架构的设计，并把生产系统中的复杂实现压缩为可学习、可测试的最小版本。
+本文不是完整功能对比，也不建议把 OpenClaw 或 Hermes Agent 逐项复制到 Nano Agent。重点是寻找当前教学项目尚未具备、但能帮助理解 Agent 核心架构的设计，并把生产系统中的复杂实现压缩为可学习、可测试的最小版本。
 
 当前项目基线以 [ARCHITECTURE.md](ARCHITECTURE.md)、[DEVELOPMENT_PROGRESS.md](DEVELOPMENT_PROGRESS.md) 和实际源码为准。用户给出的 `nanobot/agent/tools/` 在仓库中不存在，实际工具目录是 [`nanobot/tools/`](../nanobot/tools/)。目前已经具备：
 

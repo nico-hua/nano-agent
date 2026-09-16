@@ -1,7 +1,7 @@
-# Nanobot Web UI
+# Nano Agent Web UI
 
 This directory is an independent React + TypeScript + Vite frontend for the
-Nanobot project. It connects to the existing WebSocket Channel for normal and
+Nano Agent project. It connects to the existing WebSocket Channel for normal and
 streaming assistant responses, including tool-call progress, and uses the local
 HTTP API to list and load persisted sessions.
 
@@ -34,7 +34,7 @@ Selecting one loads its user/assistant transcript through
 `GET /v1/sessions/{session_id}` and uses that ID for subsequent WebSocket
 messages. Assistant tool calls are shown with the historical response, while
 tool results remain internal. **New session** creates a browser-side unique ID
-and clears only the current UI; it is persisted by Nanobot after the first
+and clears only the current UI; it is persisted by Nano Agent after the first
 message is sent.
 
 ## Streaming events
