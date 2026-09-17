@@ -10,6 +10,7 @@ export type UserMessage = {
   role: "user";
   content: string;
   isStreaming: false;
+  isVisible: boolean;
 };
 
 export type AssistantMessage = {
@@ -17,6 +18,7 @@ export type AssistantMessage = {
   role: "assistant";
   content: string;
   isStreaming: boolean;
+  isVisible: boolean;
   toolCalls: ToolCall[];
 };
 
@@ -26,11 +28,13 @@ export type ChatMessage = UserMessage | AssistantMessage;
 export type PersistedUserMessage = {
   role: "user";
   content: string;
+  isVisible: boolean;
 };
 
 export type PersistedAssistantMessage = {
   role: "assistant";
   content: string;
+  isVisible: boolean;
   toolCalls: ToolCall[];
 };
 

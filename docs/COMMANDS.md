@@ -52,7 +52,7 @@ python -m nanobot [--config <path>] [--workspace <path>]
 | `cancelled` | 被 `/subagents cancel` 或应用关闭取消；不会再发布成功结果。 |
 | `timeout` | 超过后台子任务的运行时限；Manager 会尝试投递无法及时完成的内部通知。 |
 
-后台子任务由主 Agent 通过 `spawn` 工具创建：`wait=true` 会同步等待结果，`wait=false` 会立即返回任务 ID，并在完成后通过现有 `MessageBus → AgentLoop` 链路发回同一 session。
+后台子任务由主 Agent 通过 `spawn` 工具创建：`wait=true` 会同步等待结果，`wait=false` 会立即返回任务 ID，并在完成后通过现有 `MessageBus → AgentLoop` 链路发回同一 session。异步回传携带 `source=subagent`；Session 仍保存完整回传提示和主 Agent 工具链，但 Web UI 只展示该回传 turn 的最后一条 AIMessage。同步 `wait=true` 不使用这条展示策略。
 
 ## 会话范围
 

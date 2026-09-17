@@ -80,6 +80,22 @@ class ProviderModelsTest(unittest.TestCase):
         self.assertEqual(messages[2].tool_calls, (tool_call,))
         self.assertEqual(messages[3].tool_call_id, "call-1")
 
+    def test_message_visibility_defaults_to_true_and_can_be_disabled(self) -> None:
+        self.assertTrue(HumanMessage(content="visible").is_visible)
+        self.assertFalse(
+            AIMessage(content="hidden", is_visible=False).is_visible
+        )
+        self.assertFalse(
+            ToolMessage(
+                content="hidden tool result",
+                tool_call_id="call-1",
+                is_visible=False,
+            ).is_visible
+        )
+
+        with self.assertRaises(TypeError):
+            HumanMessage(content="invalid", is_visible=1)
+
     def test_tool_message_keeps_tool_call_id(self) -> None:
         message = ToolMessage(
             content='{"result": "sunny"}',

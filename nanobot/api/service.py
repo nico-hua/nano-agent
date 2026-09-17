@@ -197,7 +197,7 @@ class HttpApiService:
         )
 
     async def _get_session(self, request: web.Request) -> web.Response:
-        """Return the UI-visible history for one saved session."""
+        """Return the chat history and display flags for one saved session."""
 
         session_id = request.match_info["session_id"]
         session = self._session_manager.get(session_id)
@@ -211,7 +211,7 @@ class HttpApiService:
             {
                 "session_id": session.key,
                 "updated_at": session.updated_at.isoformat(),
-                "messages": _visible_message_records(session.messages),
+                "messages": _chat_message_records(session.messages),
             }
         )
 
@@ -386,13 +386,29 @@ def _session_summary(session: Session) -> dict[str, Any]:
 def _visible_message_records(
     messages: tuple[BaseMessage, ...],
 ) -> list[dict[str, Any]]:
-    """Expose assistant tool requests while hiding tool results and system state."""
+    """Return displayed chat messages for session summaries."""
+
+    return [
+        record
+        for record in _chat_message_records(messages)
+        if record["is_visible"] is True
+    ]
+
+
+def _chat_message_records(
+    messages: tuple[BaseMessage, ...],
+) -> list[dict[str, Any]]:
+    """Expose chat messages and their display flags without internal tool results."""
 
     records: list[dict[str, Any]] = []
     for message in messages:
         if message.role not in {"user", "assistant"}:
             continue
-        record: dict[str, Any] = {"role": message.role, "content": message.content}
+        record: dict[str, Any] = {
+            "role": message.role,
+            "content": message.content,
+            "is_visible": message.is_visible,
+        }
         if isinstance(message, AIMessage) and message.tool_calls:
             record["tool_calls"] = [
                 {

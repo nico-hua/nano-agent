@@ -45,36 +45,40 @@ export function createInitialChatState(): ChatState {
   };
 }
 
-/** Replace only the visible transcript when the user selects another session. */
+/** Replace the persisted transcript while retaining each message's display flag. */
 export function replaceChatHistory(
   state: ChatState,
   messages: readonly PersistedSessionMessage[],
 ): ChatState {
-  const visibleMessages = messages.map(
-    (message, index): ChatMessage =>
-      message.role === "user"
+  const historyMessages = messages.map(
+    (message, index): ChatMessage => {
+      const isVisible = message.isVisible !== false;
+      return message.role === "user"
         ? {
             id: `user-${index + 1}`,
             role: "user",
             content: message.content,
             isStreaming: false,
+            isVisible,
           }
         : {
             id: `assistant-${index + 1}`,
             role: "assistant",
             content: message.content,
             isStreaming: false,
+            isVisible,
             toolCalls: message.toolCalls,
-          },
+          };
+    },
   );
   return {
     ...state,
     error: null,
     isSending: false,
     isStopping: false,
-    messages: visibleMessages,
+    messages: historyMessages,
     activeAssistantId: null,
-    nextMessageSequence: visibleMessages.length,
+    nextMessageSequence: historyMessages.length,
   };
 }
 
@@ -185,6 +189,7 @@ export function beginUserMessage(state: ChatState, content: string): ChatState {
         role: "user",
         content,
         isStreaming: false,
+        isVisible: true,
       },
     ],
   };
@@ -252,6 +257,7 @@ function appendAssistantDelta(state: ChatState, content: string): ChatState {
           role: "assistant",
           content,
           isStreaming: true,
+          isVisible: true,
           toolCalls: [],
         },
       ],
@@ -282,6 +288,7 @@ function appendAssistantToolCall(state: ChatState, toolCall: ToolCall): ChatStat
           role: "assistant",
           content: "",
           isStreaming: true,
+          isVisible: true,
           toolCalls: [toolCall],
         },
       ],
@@ -348,6 +355,7 @@ function withAssistantFinished(
           role: "assistant",
           content,
           isStreaming: false,
+          isVisible: true,
           toolCalls: [],
         },
       ],
@@ -362,6 +370,13 @@ function withAssistantFinished(
     isStopping: false,
     activeAssistantId: null,
   };
+}
+
+/** Return the messages that should be rendered in the conversation. */
+export function visibleChatMessages(
+  messages: readonly ChatMessage[],
+): ChatMessage[] {
+  return messages.filter((message) => message.isVisible !== false);
 }
 
 function discardInterruptedTurn(

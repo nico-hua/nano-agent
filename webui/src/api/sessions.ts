@@ -30,7 +30,7 @@ export async function fetchSessionSummaries(
   return payload.sessions.map(parseSessionSummary);
 }
 
-/** Fetch one UI-visible persisted transcript through Nanobot's HTTP API. */
+/** Fetch one persisted transcript and its display flags through Nanobot's HTTP API. */
 export async function fetchSessionHistory(
   apiBaseUrl: string,
   sessionId: string,
@@ -123,13 +123,25 @@ function parseHistoryMessage(value: unknown): PersistedSessionMessage {
     return {
       role: "user",
       content: requiredText(value.content),
+      isVisible: parseVisibility(value.is_visible),
     };
   }
   return {
     role: "assistant",
     content: requiredText(value.content),
+    isVisible: parseVisibility(value.is_visible),
     toolCalls: parseToolCalls(value.tool_calls),
   };
+}
+
+function parseVisibility(value: unknown): boolean {
+  if (value === undefined) {
+    return true;
+  }
+  if (typeof value !== "boolean") {
+    throw invalidResponse();
+  }
+  return value;
 }
 
 function parseToolCalls(value: unknown): ToolCall[] {

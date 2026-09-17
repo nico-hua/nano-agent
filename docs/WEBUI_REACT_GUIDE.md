@@ -227,7 +227,7 @@ Vite 加载 `index.html`，其中的 `<script type="module" src="/src/main.tsx">
 该文件集中定义三类类型：
 
 - UI 内部消息：`UserMessage`、`AssistantMessage`、`ChatMessage`。
-- Session HTTP API 返回的可见历史：`PersistedSessionMessage`、`SessionInfo`、`SessionHistory`。
+- Session HTTP API 返回带有 `is_visible` 展示标记的完整 user/assistant 历史（包括隐藏记录）：`PersistedSessionMessage`、`SessionInfo`、`SessionHistory`。
 - WebSocket 客户端/服务端事件：`WebSocketClientMessage`、`WebSocketAuthenticationMessage`、`ServerEvent`。
 
 它还提供三类函数：
@@ -248,10 +248,12 @@ Vite 加载 `index.html`，其中的 `<script type="module" src="/src/main.tsx">
 
 - `connectionStatus`：连接、重连、断开和错误状态。
 - `authenticationStatus`：认证检查、认证中、成功或失败。
-- `messages`：当前正在显示的消息。
+- `messages`：当前会话的全部 user/assistant 消息及其 `isVisible` 展示标记；隐藏记录仍保留在状态中，渲染时由 `visibleChatMessages()` 统一过滤。
 - `activeAssistantId`：当前流式助手消息的 ID；用于将多个 delta 拼到同一消息上。
 - `isSending`、`isStopping`：驱动发送与停止按钮。
 - `nextMessageSequence`：生成页面内稳定消息 ID。
+
+`sessions.ts` 将 API 的 `is_visible` 转为 `isVisible`；为了兼容旧 Session，字段缺失时默认为 `true`。后端会将 cron 和异步 subagent turn 的内部提示及中间消息标为隐藏，仅保留最后一条 AIMessage 可见；前端不根据 `source` 重复实现这项业务规则。
 
 事件处理的关键规则：
 

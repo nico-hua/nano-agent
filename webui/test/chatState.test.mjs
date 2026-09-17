@@ -16,6 +16,7 @@ import {
   markReconnectFailed,
   markReconnecting,
   replaceChatHistory,
+  visibleChatMessages,
 } from "../.test-build/hooks/chatState.js";
 import {
   DEFAULT_RECONNECT_DELAYS_MS,
@@ -392,6 +393,48 @@ test("saved-session history replaces visible chat state without mixing sessions"
   assert.equal(state.activeAssistantId, null);
 });
 
+test("message visibility is preserved and hidden history is excluded from the rendered list", () => {
+  let state = replaceChatHistory(createInitialChatState(), [
+    { role: "user", content: "Visible question", isVisible: true },
+    {
+      role: "assistant",
+      content: "Internal progress",
+      isVisible: false,
+      toolCalls: [],
+    },
+    { role: "user", content: "Hidden cron prompt", isVisible: false },
+    {
+      role: "assistant",
+      content: "Visible answer",
+      isVisible: true,
+      toolCalls: [],
+    },
+  ]);
+
+  assert.deepEqual(
+    state.messages.map(({ content, isVisible }) => ({ content, isVisible })),
+    [
+      { content: "Visible question", isVisible: true },
+      { content: "Internal progress", isVisible: false },
+      { content: "Hidden cron prompt", isVisible: false },
+      { content: "Visible answer", isVisible: true },
+    ],
+  );
+  assert.deepEqual(
+    visibleChatMessages(state.messages).map(({ content }) => content),
+    ["Visible question", "Visible answer"],
+  );
+});
+
+test("history loading uses the count of messages that can actually be rendered", async () => {
+  const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(
+    appSource,
+    /\{isLoadingHistory && displayedMessages\.length === 0 \?/,
+  );
+});
+
 test("late stream events from an unselected session are ignored", () => {
   assert.equal(
     isEventForSession(
@@ -450,6 +493,11 @@ test("the session API loads summaries and a selected transcript", async () => {
         updated_at: "2026-09-08T12:01:00+00:00",
         messages: [
           { role: "user", content: "Hello" },
+          {
+            role: "assistant",
+            content: "Internal progress",
+            is_visible: false,
+          },
           { role: "assistant", content: "Hi" },
         ],
       }),
@@ -477,8 +525,14 @@ test("the session API loads summaries and a selected transcript", async () => {
       },
     ]);
     assert.deepEqual(history.messages, [
-      { role: "user", content: "Hello" },
-      { role: "assistant", content: "Hi", toolCalls: [] },
+      { role: "user", content: "Hello", isVisible: true },
+      {
+        role: "assistant",
+        content: "Internal progress",
+        isVisible: false,
+        toolCalls: [],
+      },
+      { role: "assistant", content: "Hi", isVisible: true, toolCalls: [] },
     ]);
     assert.deepEqual(requests, [
       {
@@ -542,6 +596,7 @@ test("deltas accumulate into one assistant message and turn_end does not duplica
     role: "assistant",
     content: "Hello Nanobot",
     isStreaming: true,
+    isVisible: true,
     toolCalls: [],
   });
 
@@ -558,6 +613,7 @@ test("deltas accumulate into one assistant message and turn_end does not duplica
     role: "assistant",
     content: "Hello Nanobot",
     isStreaming: false,
+    isVisible: true,
     toolCalls: [],
   });
   assert.equal(state.isSending, false);
@@ -623,6 +679,7 @@ test("tool calls attach to the current streaming assistant response", () => {
     role: "assistant",
     content: "The README says hello.",
     isStreaming: false,
+    isVisible: true,
     toolCalls: [
       {
         id: "call-1",

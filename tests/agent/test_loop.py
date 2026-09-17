@@ -1250,8 +1250,106 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(provider.complete_calls[1][1:-1], saved_messages)
         self.assertEqual(provider.complete_calls[1][-1], HumanMessage(content="Run scheduled work."))
         self.assertEqual(updated_messages[: len(saved_messages)], saved_messages)
-        self.assertEqual(updated_messages[-2], HumanMessage(content="Run scheduled work."))
-        self.assertEqual(updated_messages[-1], AIMessage(content="Scheduled answer."))
+        self.assertEqual(
+            updated_messages[-2],
+            HumanMessage(content="Run scheduled work.", is_visible=False),
+        )
+        self.assertEqual(
+            updated_messages[-1],
+            AIMessage(content="Scheduled answer.", is_visible=True),
+        )
+
+    async def test_cron_turn_only_shows_the_last_ai_message_from_new_messages(self) -> None:
+        request = ToolCallRequest(
+            id="call-1",
+            name="echo",
+            arguments={"value": "scheduled"},
+        )
+        provider = ScriptedProvider(
+            (
+                LLMResponse(content="Initial answer."),
+                LLMResponse(content="I will run the task.", tool_calls=(request,)),
+                LLMResponse(content="Scheduled final answer."),
+            )
+        )
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry((EchoTool(),)),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+
+        await _dispatch(loop, "Initial question.", "test", "chat-1", "session-1")
+        await _dispatch(
+            loop,
+            "Run scheduled work.",
+            "test",
+            "chat-1",
+            "session-1",
+            {"source": "cron"},
+        )
+
+        messages = self._sessions.get_or_create("session-1").messages
+        self.assertEqual(
+            [
+                (message.role, message.content, message.is_visible)
+                for message in messages[-4:]
+            ],
+            [
+                ("user", "Run scheduled work.", False),
+                ("assistant", "I will run the task.", False),
+                ("tool", "echo: scheduled", False),
+                ("assistant", "Scheduled final answer.", True),
+            ],
+        )
+        self.assertTrue(all(message.is_visible for message in messages[:2]))
+
+    async def test_subagent_turn_only_shows_the_last_ai_message_from_new_messages(self) -> None:
+        request = ToolCallRequest(
+            id="call-1",
+            name="echo",
+            arguments={"value": "background result"},
+        )
+        provider = ScriptedProvider(
+            (
+                LLMResponse(content="Initial answer."),
+                LLMResponse(content="I will process the result.", tool_calls=(request,)),
+                LLMResponse(content="Background task final answer."),
+            )
+        )
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry((EchoTool(),)),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+
+        await _dispatch(loop, "Initial question.", "test", "chat-1", "session-1")
+        await _dispatch(
+            loop,
+            "A background subagent task has completed.",
+            "test",
+            "chat-1",
+            "session-1",
+            {"source": "subagent", "task_id": "task-1"},
+        )
+
+        messages = self._sessions.get_or_create("session-1").messages
+        self.assertEqual(
+            [
+                (message.role, message.content, message.is_visible)
+                for message in messages[-4:]
+            ],
+            [
+                ("user", "A background subagent task has completed.", False),
+                ("assistant", "I will process the result.", False),
+                ("tool", "echo: background result", False),
+                ("assistant", "Background task final answer.", True),
+            ],
+        )
+        self.assertTrue(all(message.is_visible for message in messages[:2]))
 
     async def test_returns_a_user_facing_message_when_required_context_exceeds_the_window(self) -> None:
         provider = ScriptedProvider(())

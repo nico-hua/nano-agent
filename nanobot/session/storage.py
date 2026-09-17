@@ -140,6 +140,7 @@ def _message_to_record(message: BaseMessage) -> dict[str, Any]:
         "type": "message",
         "role": message.role,
         "content": message.content,
+        "is_visible": message.is_visible,
     }
     if isinstance(message, AIMessage):
         record["tool_calls"] = [
@@ -177,10 +178,11 @@ def _message_from_record(record: Mapping[str, Any]) -> BaseMessage:
 
     content = _required_string(record, "content")
     role = _required_text(record, "role")
+    is_visible = _optional_visibility(record)
     if role == "system":
-        return SystemMessage(content=content)
+        return SystemMessage(content=content, is_visible=is_visible)
     if role == "user":
-        return HumanMessage(content=content)
+        return HumanMessage(content=content, is_visible=is_visible)
     if role == "assistant":
         tool_calls = record.get("tool_calls", [])
         if not isinstance(tool_calls, list):
@@ -188,11 +190,13 @@ def _message_from_record(record: Mapping[str, Any]) -> BaseMessage:
         return AIMessage(
             content=content,
             tool_calls=tuple(_tool_call_from_record(tool_call) for tool_call in tool_calls),
+            is_visible=is_visible,
         )
     if role == "tool":
         return ToolMessage(
             content=content,
             tool_call_id=_required_text(record, "tool_call_id"),
+            is_visible=is_visible,
         )
     raise ValueError(f"Unsupported session message role: {role}")
 
@@ -232,6 +236,13 @@ def _optional_summary(record: Mapping[str, Any]) -> str | None:
         raise TypeError("Session record summary must be a string or null")
     if not value.strip():
         raise ValueError("Session record summary must not be blank")
+    return value
+
+
+def _optional_visibility(record: Mapping[str, Any]) -> bool:
+    value = record.get("is_visible", True)
+    if not isinstance(value, bool):
+        raise TypeError("Session record is_visible must be a boolean")
     return value
 
 

@@ -246,6 +246,8 @@ MCP 工具不同于 builtin：**MCPProvider**（**nanobot/mcp/provider.py**）�
 
 Session 保存完整 user、assistant、tool LLM 消息链。AgentLoop 不把每次重新构建的 system prompt 写入 Session，并且仅在 AgentRunner 返回完整序列后一次性保存历史、当前 user 与新增 assistant/tool 消息。
 
+每条 BaseMessage 都带有默认值为 true 的 **is_visible** 展示标记；JsonlSessionStorage 持久化该字段，读取旧记录时若字段缺失则按 true 处理。该标记不改变发送给 Provider 的完整上下文，只供 Session API、摘要列表和 Web UI 决定哪些消息面向用户展示。对于 source=cron 和异步 source=subagent 的内部 turn，AgentLoop 仅将本轮最后一条 AIMessage 标为可见，其余新增 HumanMessage、AIMessage 和 ToolMessage 均隐藏；已有历史和其他来源保持原值。
+
 ### 6.2 ContextBuilder 是请求态
 
 **ContextBuilder**（**nanobot/agent/context.py**）每次请求新建 system prompt，并读取 workspace 下可选的 AGENTS.md、SOUL.md、USER.md、MEMORY.md 与 Skills。
@@ -350,6 +352,8 @@ Cron 模块在 **nanobot/cron/**：
 
 因此定时任务会照常经过 AgentLoop、Session 保存、摘要、长期记忆和 Channel 投递，而不是由 CronService 直接调用 Provider 或 QQ。
 
+source=cron 的内部提示及中间工具链仍完整保存，但展示标记仅保留本轮最后一条 AIMessage，避免 Web UI 暴露调度提示和执行过程。
+
 ### 7.4 Subagent
 
 **SubagentManager**（**nanobot/subagent/manager.py**）为子任务构造独立 AgentRunSpec：只有 ContextBuilder 生成的 subagent system prompt 与 task HumanMessage，不继承主 Session 历史，也不写主 Session。
@@ -359,6 +363,7 @@ Cron 模块在 **nanobot/cron/**：
 - SpawnTool 的 wait=true 同步等待子 Agent，最终文本作为普通 ToolResult 返回。
 - wait=false 创建内存后台任务，记录 pending、running、completed、failed、cancelled、timeout 状态和原始路由。
 - 后台任务完成或失败后，SubagentManager 发布带 source=subagent、task_id 和原始路由的内部 InboundMessage；主 Agent 再正常整理并回复用户。
+- source=subagent 的回传提示和主 Agent 中间工具链会完整保存但标为隐藏，Web UI 只展示该回传 turn 的最后一条 AIMessage。wait=true 仅返回普通 ToolResult，不进入这条异步展示策略。
 
 后台任务状态不持久化；Application 与 AgentLoop 关闭时会取消并等待它们。
 
@@ -400,8 +405,8 @@ HttpApiService 当前提供：
 
 - GET /health：健康检查，不返回配置、token 或 Session 数据。
 - POST /v1/messages：同步发送消息并得到最终文本。
-- GET /v1/sessions：只读会话摘要列表。
-- GET /v1/sessions/{session_id}：只读可见 user/assistant 历史；assistant tool call 可见，tool result 不暴露。
+- GET /v1/sessions：只读会话摘要列表；消息数量和预览只统计 is_visible=true 的记录。
+- GET /v1/sessions/{session_id}：返回带 is_visible 标记的 user/assistant 历史，包括隐藏记录；assistant tool call 随所属 assistant 返回，tool result 不暴露。
 
 认证开启时，除 /health 外的 HTTP 路由使用 Authorization: Bearer token。这是本地静态 token 认证，不是用户体系、角色权限或多租户授权。
 
@@ -420,7 +425,7 @@ main.tsx
       -> MessageContent：用户纯文本；assistant 安全 Markdown 与工具详情
 ~~~
 
-App 负责页面级 session 选择、历史加载、输入和滚动；useNanobotWebSocket 只处理连接、发送、接收和认证；chatState 只更新消息、流式状态和错误；sessions.ts 只负责 HTTP Session 请求。重连成功后，前端重新读取当前 Session 的已持久化历史，并丢弃未确认 delta，避免把中断片段误当成持久化对话。
+App 负责页面级 session 选择、历史加载、输入和滚动；useNanobotWebSocket 只处理连接、发送、接收和认证；chatState 保留历史接口返回的全部消息及其 isVisible 标记，渲染前再过滤隐藏记录；sessions.ts 只负责 HTTP Session 请求，并将旧响应中缺失的 is_visible 兼容为 true。重连成功后，前端重新读取当前 Session 的已持久化历史，并丢弃未确认 delta，避免把中断片段误当成持久化对话。
 
 前后端分离的好处是 Python Agent 服务可独立运行，Web UI 也能独立构建和迭代；二者只需维护明确的 HTTP 与 WebSocket 协议。
 
@@ -490,6 +495,7 @@ HTTP API
 10. **Memory cursor 只在确认后推进。** MEMORY.md 更新成功或模型明确无记忆可写时才跳过事件；失败必须保留 cursor。
 11. **WebSocket 断开不会遗留任务。** 断开触发同一 session 的 /stop 路径，Channel.stop 清理连接和 handler。
 12. **敏感值不得外泄。** API key、QQ secret、授权 token、Authorization header 和消息内容不得写进日志、错误响应或文档示例。
+13. **展示标记不破坏完整历史。** is_visible 只控制 API 摘要和 Web UI 渲染；隐藏消息仍保留在 Session 和 Provider 上下文中。cron 与异步 subagent turn 只展示本轮最后一条 AIMessage，其他来源默认展示。
 
 ## 11. 设计取舍
 

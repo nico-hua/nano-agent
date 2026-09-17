@@ -32,10 +32,14 @@ shared commits.
 The left sidebar displays persisted sessions returned by `GET /v1/sessions`.
 Selecting one loads its user/assistant transcript through
 `GET /v1/sessions/{session_id}` and uses that ID for subsequent WebSocket
-messages. Assistant tool calls are shown with the historical response, while
-tool results remain internal. **New session** creates a browser-side unique ID
-and clears only the current UI; it is persisted by Nano Agent after the first
-message is sent.
+messages. Each transcript record carries an `is_visible` display flag; the UI
+defaults missing flags to visible, retains hidden records in chat state, and
+filters them only when rendering. The backend uses hidden records for cron and
+background-subagent prompts and intermediate messages, leaving only the final
+assistant message in those turns visible. Assistant tool calls are shown with
+the historical response, while tool results remain internal. **New session**
+creates a browser-side unique ID and clears only the current UI; it is persisted
+by Nano Agent after the first message is sent.
 
 ## Streaming events
 

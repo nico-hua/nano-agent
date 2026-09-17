@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..bus import InboundMessage, MessageBus, OutboundMessage
 from ..memory import MemoryConsolidator, MemoryEventConsumer, MemoryStore
 from ..providers import (
+    AIMessage,
     BaseMessage,
     HumanMessage,
     LLMProvider,
@@ -413,6 +415,7 @@ class AgentLoop:
         if task is None:
             raise RuntimeError("AgentLoop requires a running asyncio task")
         is_goal_turn = _is_goal_message(inbound)
+        hide_intermediate_messages = _hides_intermediate_messages(inbound)
         is_streaming = _is_streaming_message(inbound)
         if is_goal_turn and not self._has_active_goal(session_key):
             # A new /goal persists its active GoalState before publishing this
@@ -545,6 +548,7 @@ class AgentLoop:
                     current_message,
                     completed_messages,
                     is_goal_turn=is_goal_turn,
+                    hide_intermediate_messages=hide_intermediate_messages,
                     result=result,
                 )
                 if is_goal_turn and result.stop_reason == "max_iterations":
@@ -609,6 +613,7 @@ class AgentLoop:
         completed_messages: tuple[BaseMessage, ...],
         *,
         is_goal_turn: bool,
+        hide_intermediate_messages: bool,
         result: AgentRunResult,
     ) -> Session:
         """Save one complete runner result, then trigger post-save work."""
@@ -616,8 +621,13 @@ class AgentLoop:
         # A session is only changed after AgentRunner has returned a complete
         # assistant/tool sequence.  This keeps cancellation from persisting a
         # partial tool-call batch.
+        turn_messages = _messages_for_persistence(
+            current_message,
+            completed_messages,
+            hide_intermediate_messages=hide_intermediate_messages,
+        )
         session = self._session_manager.get_or_create(session_key).with_messages(
-            (*history, current_message, *completed_messages)
+            (*history, *turn_messages)
         )
         if is_goal_turn and result.stop_reason != "max_iterations":
             status: Literal["completed", "failed"] = (
@@ -631,7 +641,7 @@ class AgentLoop:
         if self._memory_events is not None:
             self._memory_events.append(
                 session_key,
-                (current_message, *completed_messages),
+                turn_messages,
             )
         # Compaction is deliberately asynchronous so it cannot delay a reply.
         self._schedule_compaction(session_key)
@@ -982,12 +992,43 @@ def _outbound_message(
         metadata=inbound.metadata if metadata is None else metadata,
     )
 
+
+def _messages_for_persistence(
+    current_message: HumanMessage,
+    completed_messages: tuple[BaseMessage, ...],
+    *,
+    hide_intermediate_messages: bool,
+) -> tuple[BaseMessage, ...]:
+    """Apply the display policy to one completed turn before it is saved."""
+
+    messages = (current_message, *completed_messages)
+    if not hide_intermediate_messages:
+        return messages
+
+    last_ai_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if isinstance(messages[index], AIMessage)
+        ),
+        None,
+    )
+    return tuple(
+        replace(message, is_visible=index == last_ai_index)
+        for index, message in enumerate(messages)
+    )
+
+
 def _without_system_messages(messages: tuple[BaseMessage, ...]) -> tuple[BaseMessage, ...]:
     return tuple(message for message in messages if not isinstance(message, SystemMessage))
 
 
 def _is_goal_message(inbound: InboundMessage) -> bool:
     return inbound.metadata.get("source") == "goal"
+
+
+def _hides_intermediate_messages(inbound: InboundMessage) -> bool:
+    return inbound.metadata.get("source") in {"cron", "subagent"}
 
 
 def _is_streaming_message(inbound: InboundMessage) -> bool:

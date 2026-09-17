@@ -92,6 +92,29 @@ class SessionManagerTest(unittest.TestCase):
             self.assertEqual(restored.messages[1].tool_calls, (tool_call,))
             self.assertEqual(restored.messages[2].tool_call_id, "call-1")
 
+    def test_message_visibility_survives_session_persistence(self) -> None:
+        messages = (
+            HumanMessage(content="Hidden cron prompt", is_visible=False),
+            AIMessage(content="Visible answer", is_visible=True),
+            ToolMessage(
+                content="Hidden tool result",
+                tool_call_id="call-1",
+                is_visible=False,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = SessionManager(temporary_directory)
+            manager.save(manager.get_or_create("visibility-session").with_messages(messages))
+
+            restored = SessionManager(temporary_directory).get_or_create(
+                "visibility-session"
+            )
+
+            self.assertEqual(
+                [message.is_visible for message in restored.messages],
+                [False, True, False],
+            )
+
     def test_summary_and_its_message_boundary_are_recovered(self) -> None:
         messages = (
             HumanMessage(content="First question"),

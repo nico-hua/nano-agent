@@ -399,8 +399,72 @@ class HttpApiServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             history["messages"],
             [
-                {"role": "user", "content": "First user message"},
-                {"role": "assistant", "content": "First assistant reply"},
+                {
+                    "role": "user",
+                    "content": "First user message",
+                    "is_visible": True,
+                },
+                {
+                    "role": "assistant",
+                    "content": "First assistant reply",
+                    "is_visible": True,
+                },
+            ],
+        )
+
+    async def test_session_history_preserves_visibility_and_summary_counts_visible_messages(self) -> None:
+        sessions = SessionManager(Path(self._temporary_directory.name) / "workspace")
+        sessions.save(
+            Session.create("session-visibility").with_messages(
+                (
+                    HumanMessage(content="Visible question"),
+                    AIMessage(content="Internal progress", is_visible=False),
+                    HumanMessage(content="Cron prompt", is_visible=False),
+                    AIMessage(content="Visible scheduled answer"),
+                )
+            )
+        )
+        service = await self._start_service(RecordingLoop(), sessions)
+
+        status, summaries = await _http_request(service, "GET", "/v1/sessions")
+        self.assertEqual(status, 200)
+        summary = next(
+            item
+            for item in summaries["sessions"]
+            if item["session_id"] == "session-visibility"
+        )
+        self.assertEqual(summary["message_count"], 2)
+        self.assertEqual(summary["preview"], "Visible scheduled answer")
+
+        status, history = await _http_request(
+            service,
+            "GET",
+            "/v1/sessions/session-visibility",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            history["messages"],
+            [
+                {
+                    "role": "user",
+                    "content": "Visible question",
+                    "is_visible": True,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Internal progress",
+                    "is_visible": False,
+                },
+                {
+                    "role": "user",
+                    "content": "Cron prompt",
+                    "is_visible": False,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Visible scheduled answer",
+                    "is_visible": True,
+                },
             ],
         )
 
@@ -434,10 +498,15 @@ class HttpApiServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             history["messages"],
             [
-                {"role": "user", "content": "Read the README."},
+                {
+                    "role": "user",
+                    "content": "Read the README.",
+                    "is_visible": True,
+                },
                 {
                     "role": "assistant",
                     "content": "",
+                    "is_visible": True,
                     "tool_calls": [
                         {
                             "id": "call-1",

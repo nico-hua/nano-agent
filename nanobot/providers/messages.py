@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 MessageRole = Literal["system", "user", "assistant", "tool"]
@@ -24,6 +24,11 @@ class BaseMessage(ABC):
     """Base class for messages passed to an LLM provider."""
 
     content: str
+    is_visible: bool = field(default=True, kw_only=True)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.is_visible, bool):
+            raise TypeError("is_visible must be a boolean")
 
     @property
     @abstractmethod

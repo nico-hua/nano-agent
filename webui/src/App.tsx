@@ -16,6 +16,7 @@ import { getSlashCommandSuggestions } from "./commands";
 import { CommandSuggestionPanel } from "./components/CommandSuggestionPanel";
 import { MessageContent } from "./components/MessageContent";
 import { isNearConversationBottom } from "./conversationScroll";
+import { visibleChatMessages } from "./hooks/chatState";
 import {
   type AuthenticationStatus,
   type ConnectionStatus,
@@ -172,6 +173,7 @@ function App() {
     connectionStatus !== "connected" ||
     !authenticationReady;
   const commandSuggestions = getSlashCommandSuggestions(draft);
+  const displayedMessages = visibleChatMessages(messages);
 
   useEffect(() => {
     const conversation = conversationRef.current;
@@ -337,12 +339,12 @@ function App() {
                 className="conversation-scroll"
                 onScroll={handleConversationScroll}
               >
-                {isLoadingHistory && messages.length === 0 ? (
+                {isLoadingHistory && displayedMessages.length === 0 ? (
                   <div className="chat-empty-state">
                     <p>Loading conversation...</p>
                   </div>
                 ) : null}
-                {!isLoadingHistory && messages.length === 0 ? (
+                {!isLoadingHistory && displayedMessages.length === 0 ? (
                   <div className="chat-empty-state">
                     <p>No messages yet.</p>
                     <span>
@@ -352,9 +354,9 @@ function App() {
                     </span>
                   </div>
                 ) : null}
-                {messages.length > 0 ? (
+                {displayedMessages.length > 0 ? (
                   <ol className="message-list" aria-live="polite">
-                    {messages.map((message) => (
+                    {displayedMessages.map((message) => (
                       <li
                         key={message.id}
                         className={`message message--${message.role}`}
