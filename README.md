@@ -9,7 +9,7 @@ Nano Agent 是一个参考开源项目 Nanobot 从零复现的轻量级 AI Agent
 - 内置 workspace 工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`find_files`、`grep`、`apply_patch` 与 `exec` 集中位于 `tools/builtin/filesystem.py`，共用 workspace 路径安全边界。`find_files` 按名称或 glob 查找文件，`grep` 以正则搜索 UTF-8 文本，`apply_patch` 使用严格的结构化补丁精确新增、修改或删除文本文件；三者均限制结果规模、跳过常见生成目录，并拒绝越过 workspace 或通过符号链接逃逸。网络工具统一位于 `tools/builtin/web.py`：`web_search` 通过 Tavily 返回有限的标题、URL 与摘要，`web_fetch` 以受限的 HTTP(S) 请求读取一个已知公开页面并提取文本；后者拒绝本机和内网目标、限制重定向与响应大小，且不执行页面 JavaScript。`message` 工具经共享 `MessageBus` 向当前 RequestContext 所属渠道主动发送一条文本消息，不能由模型改写目标路由；QQ 会将其作为主动消息处理，不复用入站 `message_id`。
 - `ToolRegistry`、`ToolLoader` 与 MCP tools 接入；MCP 支持 stdio、SSE 和 Streamable HTTP。
 - 支持文本流式与非流式调用的 AgentRunner 工具调用循环，以及基于 `asyncio.Queue` 的 MessageBus；流式工具执行前可单独通知调用方工具名称和参数。多个 tool call 中，显式标记为可并行的 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 会并发执行，副作用工具仍按顺序执行，最终 tool result 始终按模型请求顺序写回。
-- QQ 文本 Channel、最小 WebSocket Channel，以及独立的 React + TypeScript Web UI；均复用 ChannelManager、Application 生命周期和 `python -m nanobot` CLI 入口。WebSocket 默认仅监听本机，连接后经现有 `MessageBus` 与 AgentLoop 通信；Web UI 可查看、切换、新建和删除本地持久化会话，并可停止当前 session 的流式生成。
+- QQ 文本 Channel、最小 WebSocket Channel，以及独立的 React + TypeScript Web UI；均复用 ChannelManager、Application 生命周期和 `python -m nanobot` CLI 入口。WebSocket 默认仅监听本机，连接后经现有 `MessageBus` 与 AgentLoop 通信；Web UI 默认使用中文，可在右上角切换中英文，并可查看、切换、新建和删除本地持久化会话、停止当前 session 的流式生成。
 - 基于 `aiohttp` 的最小本地 HTTP API：`GET /health`、`POST /v1/messages`、`GET /v1/sessions`、`GET /v1/sessions/{session_id}` 与 `DELETE /v1/sessions/{session_id}`。消息请求和删除请求经 `AgentLoop` 协调；会话读取接口经 `SessionManager` 返回带有 `is_visible` 展示标记的 user/assistant 历史，不暴露 system prompt 或 tool result。
 - workspace 下的 JSONL Session 持久化、请求侧上下文裁剪和 Session 摘要压缩。Session 头部保存最近一次成功请求使用的基础 system prompt 与独立的 `last_request_at`；30 分钟内复用该提示词以保持缓存前缀稳定，超时后再从 workspace 重建，摘要与单轮 Skill 仍动态追加。每条消息携带默认值为 `true` 的 `is_visible` 展示标记，旧记录缺少该字段时仍按可见处理；标记只控制 Web UI 展示，不会从完整会话上下文中删除消息。当前 turn 仅在 `AgentRunner` 成功返回完整结果后原子保存，失败或取消不会留下半截历史。对于 `source=cron` 和异步 `source=subagent` 的内部 turn，本轮只有最后一条 `AIMessage` 可见，其余新增消息隐藏；其他来源默认全部展示。
 - Session 级持续目标：`GoalState` 独立持久化；`/goal <objective>` 或普通模式下的 `create_goal` 工具保存目标后，都会在同一 session 中投递一次基于当前上下文的目标 turn。`create_goal` 仅负责创建与调度确认，实际目标执行由后续内部消息完成；目标模式中的 `update_goal` 可更新或停止当前目标。目标达到 `max_iterations` 时，会先持久化完整工具批次，再通过内部 continuation 继续执行，并受每个目标的续跑上限约束；中间结果不会发送给用户。目标仅在返回非空文本时标记为 `completed`，空结果和执行异常标记为 `failed`；运行期间的普通用户输入按 session 合并并在工具调用安全点注入当前 Runner，不会并发启动第二个 Runner；`/goal status` 可查询状态，`/goal stop` 会取消 active goal 及其正在执行的目标 turn，进行中的目标会阻止 `/new` 重置会话。
@@ -95,7 +95,7 @@ Invoke-RestMethod http://127.0.0.1:8000/v1/messages `
 
 ## Web UI
 
-`webui/` 是与 Python 后端解耦的 React + TypeScript + Vite 前端。它通过既有 WebSocket Channel 发送现有 `message` 协议，并在 `tool_call`、`delta` 与 `turn_end` 事件间展示工具进度和累积流式回复；流式 turn 期间可点击停止，已收到的内容会保留并在取消后恢复输入。通过本地 HTTP API 显示持久化会话列表、历史 assistant tool call 和选中会话的历史。新建会话只生成新的浏览器 session ID，首次发送后才会保存。删除会话会先显示不可恢复确认弹窗；后端完成任务清理与 JSONL 删除后，页面切换到新的空白浏览器会话。认证开启时它从 `VITE_NANOBOT_AUTH_TOKEN` 完成 HTTP Bearer 与 WebSocket 首事件认证；断线时会有限次数重连并重新加载当前会话的持久化历史，不尝试恢复未完成的 delta。当前仍不包含多会话订阅、重命名或搜索。
+`webui/` 是与 Python 后端解耦的 React + TypeScript + Vite 前端。界面文案默认显示中文，右上角可切换中文与英文，选择保存在浏览器 `localStorage`；切换只影响前端自有标签、状态、确认提示和命令说明，不翻译用户/Agent 消息、工具名、工具参数或后端原始错误。它通过既有 WebSocket Channel 发送现有 `message` 协议，并在 `tool_call`、`delta` 与 `turn_end` 事件间展示工具进度和累积流式回复；流式 turn 期间可点击停止，已收到的内容会保留并在取消后恢复输入。通过本地 HTTP API 显示持久化会话列表、历史 assistant tool call 和选中会话的历史。新建会话只生成新的浏览器 session ID，首次发送后才会保存。删除会话会先显示不可恢复确认弹窗；后端完成任务清理与 JSONL 删除后，页面切换到新的空白浏览器会话。认证开启时它从 `VITE_NANOBOT_AUTH_TOKEN` 完成 HTTP Bearer 与 WebSocket 首事件认证；断线时会有限次数重连并重新加载当前会话的持久化历史，不尝试恢复未完成的 delta。当前仍不包含多会话订阅、重命名或搜索。
 
 ```powershell
 cd webui
@@ -130,7 +130,7 @@ npm run build
 - 真实 tokenizer、上下文摘要的多级策略和长期记忆冲突解决。
 - 多进程/分布式锁、记忆事件归档与可靠任务恢复。
 - 除 QQ 和 WebSocket 外的真实 Channel、消息可靠投递与总线持久化。
-- HTTP API 的流式响应、异步任务查询、限流与完整 OpenAI 兼容协议；WebSocket/Web UI 的多会话订阅、广播、会话重命名/删除/搜索与流式断点续传。
+- HTTP API 的流式响应、异步任务查询、限流与完整 OpenAI 兼容协议；WebSocket/Web UI 的多会话订阅、广播、会话重命名/搜索与流式断点续传。
 - 完整 JSON Schema 校验、工具插件生态及更复杂的安全沙箱。
 - Skill 的自动选择、安装/更新、脚本执行、权限控制与插件来源。
 

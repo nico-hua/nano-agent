@@ -4,6 +4,7 @@ import type {
   ServerEvent,
   ToolCall,
 } from "../types/protocol.js";
+import { rawError, uiError, type DisplayError } from "../i18n.js";
 
 export type { ChatMessage } from "../types/protocol.js";
 
@@ -24,7 +25,7 @@ export type AuthenticationStatus =
 export type ChatState = {
   connectionStatus: ConnectionStatus;
   authenticationStatus: AuthenticationStatus;
-  error: string | null;
+  error: DisplayError | null;
   isSending: boolean;
   isStopping: boolean;
   messages: ChatMessage[];
@@ -105,7 +106,7 @@ export function markDisconnected(state: ChatState): ChatState {
     state,
     null,
     "disconnected",
-    "The Nanobot WebSocket connection was closed.",
+    uiError("connection_closed"),
   );
 }
 
@@ -135,7 +136,7 @@ export function markAuthenticated(state: ChatState): ChatState {
 
 export function markAuthenticationFailed(
   state: ChatState,
-  error: string,
+  error: DisplayError,
 ): ChatState {
   return {
     ...withAssistantFinished(state, null, "error", error),
@@ -152,7 +153,7 @@ export function markReconnecting(state: ChatState): ChatState {
   return discardInterruptedTurn(
     state,
     "reconnecting",
-    "Connection interrupted. Reconnecting and restoring saved history.",
+    uiError("connection_interrupted"),
   );
 }
 
@@ -161,15 +162,21 @@ export function markReconnectFailed(state: ChatState): ChatState {
   return discardInterruptedTurn(
     state,
     "error",
-    "Could not reconnect to the Nanobot WebSocket service.",
+    uiError("reconnect_failed"),
   );
 }
 
-export function markConnectionError(state: ChatState, error: string): ChatState {
+export function markConnectionError(
+  state: ChatState,
+  error: DisplayError,
+): ChatState {
   return withAssistantFinished(state, null, "error", error);
 }
 
-export function markServerError(state: ChatState, error: string): ChatState {
+export function markServerError(
+  state: ChatState,
+  error: DisplayError,
+): ChatState {
   return withAssistantFinished(state, null, state.connectionStatus, error);
 }
 
@@ -219,8 +226,8 @@ export function applyServerEvent(state: ChatState, event: ServerEvent): ChatStat
       return markServerError(
         state,
         event.message.trim()
-          ? event.message
-          : "Nanobot could not process the message.",
+          ? rawError(event.message)
+          : uiError("server_processing_failed"),
       );
     case "delta":
       return appendAssistantDelta(state, event.content);
@@ -314,7 +321,7 @@ function withAssistantFinished(
   state: ChatState,
   content: string | null,
   connectionStatus: ConnectionStatus,
-  error: string | null,
+  error: DisplayError | null,
 ): ChatState {
   if (state.activeAssistantId !== null) {
     return {
@@ -382,7 +389,7 @@ export function visibleChatMessages(
 function discardInterruptedTurn(
   state: ChatState,
   connectionStatus: ConnectionStatus,
-  error: string,
+  error: DisplayError,
 ): ChatState {
   const activeAssistantId = state.activeAssistantId;
   return {

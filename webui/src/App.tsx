@@ -15,10 +15,23 @@ import {
 } from "./api/sessions";
 import { getSlashCommandSuggestions } from "./commands";
 import { CommandSuggestionPanel } from "./components/CommandSuggestionPanel";
+import { LanguageToggle } from "./components/LanguageToggle";
 import { MessageContent } from "./components/MessageContent";
 import { SessionDeleteButton } from "./components/SessionDeleteButton";
 import { isNearConversationBottom } from "./conversationScroll";
 import { visibleChatMessages } from "./hooks/chatState";
+import {
+  UI_COPY,
+  formatMessageCount,
+  formatUpdatedAt,
+  rawError,
+  readStoredLanguage,
+  resolveDisplayError,
+  storeLanguage,
+  uiError,
+  type DisplayError,
+  type Language,
+} from "./i18n";
 import {
   type AuthenticationStatus,
   type ConnectionStatus,
@@ -32,35 +45,22 @@ const API_BASE_URL =
   import.meta.env.VITE_NANOBOT_API_URL ?? "http://127.0.0.1:8000";
 const AUTH_TOKEN = import.meta.env.VITE_NANOBOT_AUTH_TOKEN;
 
-const STATUS_LABELS: Record<ConnectionStatus, string> = {
-  connecting: "Connecting",
-  connected: "Connected",
-  reconnecting: "Reconnecting",
-  disconnected: "Disconnected",
-  error: "Connection error",
-};
-
-const AUTHENTICATION_STATUS_LABELS: Record<AuthenticationStatus, string> = {
-  checking: "Authenticating",
-  not_required: "Connected",
-  authenticating: "Authenticating",
-  authenticated: "Authenticated",
-  failed: "Authentication failed",
-};
-
 function App() {
+  const [language, setLanguage] = useState<Language>(() =>
+    readStoredLanguage(window.localStorage),
+  );
+  const copy = UI_COPY[language];
   const [draft, setDraft] = useState("");
   const [sessionId, setSessionId] = useState(() => createSessionId());
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
-  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<DisplayError | null>(null);
   const [sessionPendingDeletion, setSessionPendingDeletion] =
     useState<SessionInfo | null>(null);
   const [isDeletingSession, setIsDeletingSession] = useState(false);
-  const [deleteSessionError, setDeleteSessionError] = useState<string | null>(
-    null,
-  );
+  const [deleteSessionError, setDeleteSessionError] =
+    useState<DisplayError | null>(null);
   const conversationRef = useRef<HTMLDivElement>(null);
   const draftInputRef = useRef<HTMLTextAreaElement>(null);
   const shouldFollowLatestRef = useRef(true);
@@ -88,13 +88,18 @@ function App() {
     authToken: AUTH_TOKEN,
   });
 
+  useEffect(() => {
+    document.documentElement.lang = language;
+    storeLanguage(window.localStorage, language);
+  }, [language]);
+
   const refreshSessions = useCallback(async () => {
     try {
       const summaries = await fetchSessionSummaries(API_BASE_URL, AUTH_TOKEN);
       setSessions(summaries);
       setSessionError(null);
     } catch (caughtError) {
-      setSessionError(errorMessage(caughtError));
+      setSessionError(displayError(caughtError));
     } finally {
       setIsLoadingSessions(false);
     }
@@ -128,7 +133,7 @@ function App() {
           return;
         }
         replaceMessages([]);
-        setSessionError(errorMessage(caughtError));
+        setSessionError(displayError(caughtError));
       })
       .finally(() => {
         if (historyRequestRef.current === requestId) {
@@ -180,7 +185,7 @@ function App() {
     isLoadingHistory ||
     connectionStatus !== "connected" ||
     !authenticationReady;
-  const commandSuggestions = getSlashCommandSuggestions(draft);
+  const commandSuggestions = getSlashCommandSuggestions(draft, copy.commands);
   const displayedMessages = visibleChatMessages(messages);
 
   useEffect(() => {
@@ -267,7 +272,7 @@ function App() {
       setSessionId(createSessionId());
       void refreshSessions();
     } catch (caughtError) {
-      setDeleteSessionError(errorMessage(caughtError));
+      setDeleteSessionError(displayError(caughtError));
     } finally {
       setIsDeletingSession(false);
     }
@@ -280,8 +285,8 @@ function App() {
 
   const connectionLabel =
     connectionStatus === "connected"
-      ? AUTHENTICATION_STATUS_LABELS[authenticationStatus]
-      : STATUS_LABELS[connectionStatus];
+      ? authenticationLabel(authenticationStatus, copy)
+      : connectionStatusLabel(connectionStatus, copy);
   const connectionClass =
     connectionStatus === "connected"
       ? authenticationStatus === "authenticated"
@@ -290,38 +295,45 @@ function App() {
       : connectionStatus;
 
   return (
-    <main className="app-shell" aria-label="Nanobot chat">
+    <main className="app-shell" aria-label={copy.app.ariaLabel}>
       <header className="app-header">
         <img
           className="app-logo"
           src="/nanobot-logo.png"
-          alt="Nanobot logo"
+          alt={copy.app.logoAlt}
         />
         <h1>Nanobot Web UI</h1>
+        <LanguageToggle
+          language={language}
+          copy={copy.language}
+          onChange={setLanguage}
+        />
       </header>
 
       <div className="app-workspace">
-        <aside className="session-sidebar" aria-label="Sessions">
+        <aside
+          className="session-sidebar"
+          aria-label={copy.sessions.sectionLabel}
+        >
           <div className="session-sidebar__header">
             <div>
-              <h2>Sessions</h2>
-              <p>Saved conversations</p>
+              <h2>{copy.sessions.title}</h2>
             </div>
             <button type="button" onClick={createNewSession}>
-              New session
+              {copy.sessions.newSession}
             </button>
           </div>
 
           {sessionError !== null ? (
             <p className="session-error" role="alert">
-              {sessionError}
+              {resolveDisplayError(copy, sessionError)}
             </p>
           ) : null}
 
           <div className="session-list" aria-live="polite">
-            {isLoadingSessions ? <p>Loading sessions...</p> : null}
+            {isLoadingSessions ? <p>{copy.sessions.loading}</p> : null}
             {!isLoadingSessions && sessions.length === 0 ? (
-              <p>No saved sessions yet.</p>
+              <p>{copy.sessions.empty}</p>
             ) : null}
             <ol>
               {sessions.map((session) => (
@@ -341,16 +353,17 @@ function App() {
                     >
                       <span className="session-item__id">{session.sessionId}</span>
                       <span className="session-item__preview">
-                        {session.preview || "No visible messages"}
+                        {session.preview || copy.sessions.noVisibleMessages}
                       </span>
                       <span className="session-item__meta">
-                        {session.messageCount} message{session.messageCount === 1 ? "" : "s"}
+                        {formatMessageCount(copy, session.messageCount)}
                         {" · "}
-                        {formatUpdatedAt(session.updatedAt)}
+                        {formatUpdatedAt(language, session.updatedAt, copy)}
                       </span>
                     </button>
                     <SessionDeleteButton
-                      sessionId={session.sessionId}
+                      ariaLabel={copy.sessions.deleteLabel(session.sessionId)}
+                      title={copy.sessions.deleteTitle}
                       onDelete={() => requestSessionDeletion(session)}
                     />
                   </div>
@@ -363,7 +376,7 @@ function App() {
         <div className="chat-workspace">
           <section className="chat-panel" aria-labelledby="conversation-title">
             <div className="chat-panel__header">
-              <h2 id="conversation-title">Conversation</h2>
+              <h2 id="conversation-title">{copy.conversation.title}</h2>
               <div className="chat-panel__connection">
                 <span className={`status-badge status-badge--${connectionClass}`}>
                   {connectionLabel}
@@ -375,7 +388,7 @@ function App() {
                     className="connection-retry"
                     onClick={handleReconnect}
                   >
-                    Reconnect
+                    {copy.connection.reconnect}
                   </button>
                 ) : null}
               </div>
@@ -384,7 +397,7 @@ function App() {
             <div className="chat-panel__body">
               {error !== null ? (
                 <p className="connection-error" role="alert">
-                  {error}
+                  {resolveDisplayError(copy, error)}
                 </p>
               ) : null}
 
@@ -395,16 +408,16 @@ function App() {
               >
                 {isLoadingHistory && displayedMessages.length === 0 ? (
                   <div className="chat-empty-state">
-                    <p>Loading conversation...</p>
+                    <p>{copy.conversation.loading}</p>
                   </div>
                 ) : null}
                 {!isLoadingHistory && displayedMessages.length === 0 ? (
                   <div className="chat-empty-state">
-                    <p>No messages yet.</p>
+                    <p>{copy.conversation.empty}</p>
                     <span>
                       {connectionStatus === "connected"
-                        ? "Send a message to start a conversation."
-                        : "Waiting for the local Nanobot connection."}
+                        ? copy.conversation.start
+                        : copy.conversation.waiting}
                     </span>
                   </div>
                 ) : null}
@@ -415,7 +428,7 @@ function App() {
                         key={message.id}
                         className={`message message--${message.role}`}
                       >
-                        <MessageContent {...message} />
+                        <MessageContent {...message} copy={copy.messages} />
                       </li>
                     ))}
                   </ol>
@@ -426,12 +439,13 @@ function App() {
 
           <form
             className="composer"
-            aria-label="Message composer"
+            aria-label={copy.composer.label}
             onSubmit={handleSubmit}
           >
             {commandSuggestions.length > 0 ? (
               <CommandSuggestionPanel
                 suggestions={commandSuggestions}
+                ariaLabel={copy.commands.panelLabel}
                 onSelect={handleCommandSelection}
               />
             ) : null}
@@ -439,11 +453,11 @@ function App() {
               <textarea
                 id="message"
                 name="message"
-                aria-label="Message"
+                aria-label={copy.composer.inputLabel}
                 ref={draftInputRef}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
-                placeholder="Ask Nanobot anything..."
+                placeholder={copy.composer.placeholder}
                 rows={1}
                 disabled={isComposerDisabled}
               />
@@ -455,11 +469,11 @@ function App() {
                     onClick={handleStop}
                     disabled={isStopping}
                   >
-                    {isStopping ? "Stopping..." : "Stop"}
+                    {isStopping ? copy.composer.stopping : copy.composer.stop}
                   </button>
                 ) : null}
                 <button type="submit" disabled={!canSend}>
-                  {isSending ? "Sending..." : "Send"}
+                  {isSending ? copy.composer.sending : copy.composer.send}
                 </button>
               </div>
             </div>
@@ -476,17 +490,16 @@ function App() {
             aria-labelledby="delete-session-title"
             aria-describedby="delete-session-description"
           >
-            <h2 id="delete-session-title">Delete this session?</h2>
+            <h2 id="delete-session-title">{copy.deletion.title}</h2>
             <p id="delete-session-description">
-              This session will be permanently deleted and cannot be recovered.
-              Any work still running for it will be stopped first.
+              {copy.deletion.description}
             </p>
             <p className="confirmation-modal__session">
               {sessionPendingDeletion.sessionId}
             </p>
             {deleteSessionError !== null ? (
               <p className="confirmation-modal__error" role="alert">
-                {deleteSessionError}
+                {resolveDisplayError(copy, deleteSessionError)}
               </p>
             ) : null}
             <div className="confirmation-modal__actions">
@@ -496,7 +509,7 @@ function App() {
                 disabled={isDeletingSession}
                 autoFocus
               >
-                Cancel
+                {copy.deletion.cancel}
               </button>
               <button
                 type="button"
@@ -504,7 +517,9 @@ function App() {
                 onClick={() => void confirmSessionDeletion()}
                 disabled={isDeletingSession}
               >
-                {isDeletingSession ? "Deleting..." : "Delete session"}
+                {isDeletingSession
+                  ? copy.deletion.deleting
+                  : copy.deletion.deleteSession}
               </button>
             </div>
           </section>
@@ -514,23 +529,36 @@ function App() {
   );
 }
 
-function formatUpdatedAt(value: string): string {
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) {
-    return "Recently updated";
+function displayError(caughtError: unknown): DisplayError {
+  if (caughtError instanceof SessionApiError) {
+    return caughtError.uiErrorCode
+      ? uiError(caughtError.uiErrorCode)
+      : rawError(caughtError.message);
   }
-  return new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(timestamp);
+  return caughtError instanceof Error
+    ? rawError(caughtError.message)
+    : uiError("session_load_failed");
 }
 
-function errorMessage(caughtError: unknown): string {
-  return caughtError instanceof Error
-    ? caughtError.message
-    : "Could not load saved sessions.";
+function connectionStatusLabel(
+  status: ConnectionStatus,
+  copy: (typeof UI_COPY)[Language],
+): string {
+  return copy.connection[status];
+}
+
+function authenticationLabel(
+  status: AuthenticationStatus,
+  copy: (typeof UI_COPY)[Language],
+): string {
+  const labels: Record<AuthenticationStatus, string> = {
+    checking: copy.connection.authenticating,
+    not_required: copy.connection.connected,
+    authenticating: copy.connection.authenticating,
+    authenticated: copy.connection.authenticated,
+    failed: copy.connection.authenticationFailed,
+  };
+  return labels[status];
 }
 
 export default App;

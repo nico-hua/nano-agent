@@ -4,12 +4,16 @@
 
 ## 项目开发进度
 
+### 2026-09-18
+
+- [x] Web UI 增加中英文界面切换，默认中文并将偏好保存在浏览器 localStorage。改造仅覆盖前端自有文案；用户/Agent 消息、工具名与参数、会话预览和后端原始错误保持原文。前端本地错误使用稳定错误码，可在切换语言后立即重新渲染。最新验证为 Web UI `39 passed`，production build 通过。
+
 ### 2026-09-17
 
 - [x] Web UI 会话侧栏新增不可恢复的删除确认；`DELETE /v1/sessions/{session_id}` 由 AgentLoop 统一清理会话关联 Cron、后台 Subagent、Agent/Goal turn 和压缩任务后删除 JSONL，并阻止已排队内部消息重建会话。删除成功后前端进入新的空白浏览器会话；长期记忆保留。
 - [x] 为统一消息模型增加默认值为 `true` 的 `is_visible` 展示标记，并在 Session JSONL 中持久化；旧记录缺少该字段时兼容为可见。展示标记不裁剪完整 Session，也不影响 Provider 上下文。
 - [x] Session 历史 API 返回带 `is_visible` 的 user/assistant 记录（包括隐藏记录），摘要列表只统计可见消息；Web UI 将其映射为 `isVisible`，在状态中保留完整历史并仅在渲染时过滤隐藏消息。
-- [x] 对 `source=cron` 和异步 `source=subagent` 的内部 turn 应用折叠展示策略：本轮回传提示和中间 assistant/tool 消息隐藏，仅最后一条 `AIMessage` 展示；已有历史、同步 `spawn(wait=true)` 和其他来源保持默认展示。最新完整验证为后端 `564 passed, 10 skipped`，Web UI `32 passed`，production build 通过。
+- [x] 对 `source=cron` 和异步 `source=subagent` 的内部 turn 应用折叠展示策略：本轮回传提示和中间 assistant/tool 消息隐藏，仅最后一条 `AIMessage` 展示；已有历史、同步 `spawn(wait=true)` 和其他来源保持默认展示。最新完整验证为后端 `564 passed, 10 skipped`，Web UI `39 passed`，production build 通过。
 
 ### 2026-08-28 之前（早期记录未标注具体日期）
 

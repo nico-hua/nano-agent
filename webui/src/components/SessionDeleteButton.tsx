@@ -1,10 +1,12 @@
 type SessionDeleteButtonProps = {
-  sessionId: string;
+  ariaLabel: string;
+  title: string;
   onDelete: () => void;
 };
 
 export function SessionDeleteButton({
-  sessionId,
+  ariaLabel,
+  title,
   onDelete,
 }: SessionDeleteButtonProps) {
   return (
@@ -12,8 +14,8 @@ export function SessionDeleteButton({
       type="button"
       className="session-delete"
       onClick={onDelete}
-      aria-label={`Delete session ${sessionId}`}
-      title="Delete session"
+      aria-label={ariaLabel}
+      title={title}
     >
       <svg
         viewBox="0 0 24 24"

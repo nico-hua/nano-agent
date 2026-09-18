@@ -38,25 +38,120 @@ import {
 } from "../.test-build/api/sessions.js";
 import { getSlashCommandSuggestions } from "../.test-build/commands.js";
 import { MessageContent } from "../.test-build/components/MessageContent.js";
+import { LanguageToggle } from "../.test-build/components/LanguageToggle.js";
 import { SessionDeleteButton } from "../.test-build/components/SessionDeleteButton.js";
 import { isNearConversationBottom } from "../.test-build/conversationScroll.js";
+import {
+  LANGUAGE_STORAGE_KEY,
+  UI_COPY,
+  formatMessageCount,
+  formatUpdatedAt,
+  rawError,
+  readStoredLanguage,
+  resolveDisplayError,
+  storeLanguage,
+  uiError,
+} from "../.test-build/i18n.js";
+
+test("the UI defaults to Chinese and restores only supported stored languages", () => {
+  assert.equal(readStoredLanguage(undefined), "zh-CN");
+  assert.equal(readStoredLanguage({ getItem: () => "en" }), "en");
+  assert.equal(readStoredLanguage({ getItem: () => "zh-CN" }), "zh-CN");
+  assert.equal(readStoredLanguage({ getItem: () => "fr" }), "zh-CN");
+  assert.equal(
+    readStoredLanguage({
+      getItem: () => {
+        throw new Error("blocked");
+      },
+    }),
+    "zh-CN",
+  );
+});
+
+test("language persistence is best effort", () => {
+  const writes = [];
+
+  assert.equal(
+    storeLanguage(
+      {
+        setItem: (key, value) => writes.push([key, value]),
+      },
+      "en",
+    ),
+    true,
+  );
+  assert.deepEqual(writes, [[LANGUAGE_STORAGE_KEY, "en"]]);
+  assert.equal(
+    storeLanguage(
+      {
+        setItem: () => {
+          throw new Error("blocked");
+        },
+      },
+      "en",
+    ),
+    false,
+  );
+});
+
+test("localized formatting keeps Chinese and English rules explicit", () => {
+  assert.equal(UI_COPY["zh-CN"].sessions.title, "会话列表");
+  assert.equal(formatMessageCount(UI_COPY["zh-CN"], 2), "2 条消息");
+  assert.equal(formatMessageCount(UI_COPY.en, 1), "1 message");
+  assert.equal(formatMessageCount(UI_COPY.en, 2), "2 messages");
+  assert.equal(
+    formatUpdatedAt("zh-CN", "invalid", UI_COPY["zh-CN"]),
+    "最近更新",
+  );
+  assert.equal(formatUpdatedAt("en", "invalid", UI_COPY.en), "Recently updated");
+});
+
+test("front-end errors translate while backend errors remain verbatim", () => {
+  assert.equal(
+    resolveDisplayError(UI_COPY["zh-CN"], uiError("reconnect_failed")),
+    "无法重新连接到 Nanobot WebSocket 服务。",
+  );
+  assert.equal(
+    resolveDisplayError(UI_COPY.en, uiError("reconnect_failed")),
+    "Could not reconnect to the Nanobot WebSocket service.",
+  );
+  assert.equal(
+    resolveDisplayError(UI_COPY.en, rawError("后端原始错误")),
+    "后端原始错误",
+  );
+});
 
 test("the session delete control renders an accessible trash icon", () => {
   const markup = renderToStaticMarkup(
     createElement(SessionDeleteButton, {
-      sessionId: "session-one",
+      ariaLabel: "删除会话 session-one",
+      title: "删除会话",
       onDelete: () => {},
     }),
   );
 
-  assert.match(markup, /aria-label="Delete session session-one"/);
+  assert.match(markup, /aria-label="删除会话 session-one"/);
   assert.match(markup, /<svg[^>]*aria-hidden="true"/);
   assert.doesNotMatch(markup, />Delete<\/button>/);
 });
 
+test("the language toggle exposes the active language accessibly", () => {
+  const markup = renderToStaticMarkup(
+    createElement(LanguageToggle, {
+      language: "zh-CN",
+      copy: UI_COPY["zh-CN"].language,
+      onChange: () => {},
+    }),
+  );
+
+  assert.match(markup, /aria-label="界面语言"/);
+  assert.match(markup, /aria-pressed="true"[^>]*>中文</);
+  assert.match(markup, /aria-pressed="false"[^>]*>EN</);
+});
+
 test("slash command suggestions list, filter, and preserve argument placeholders", () => {
   assert.deepEqual(
-    getSlashCommandSuggestions("/").map((suggestion) => suggestion.usage),
+    getSlashCommandSuggestions("/", UI_COPY["zh-CN"].commands).map((suggestion) => suggestion.usage),
     [
       "/new",
       "/stop",
@@ -72,19 +167,23 @@ test("slash command suggestions list, filter, and preserve argument placeholders
     ],
   );
   assert.deepEqual(
-    getSlashCommandSuggestions("/goal st").map(
+    getSlashCommandSuggestions("/goal st", UI_COPY["zh-CN"].commands).map(
       (suggestion) => suggestion.usage,
     ),
     ["/goal status", "/goal stop"],
   );
-  assert.equal(getSlashCommandSuggestions("ordinary text").length, 0);
+  assert.equal(getSlashCommandSuggestions("ordinary text", UI_COPY["zh-CN"].commands).length, 0);
 
-  const selected = getSlashCommandSuggestions("/goal <")[0];
+  const selected = getSlashCommandSuggestions("/goal <", UI_COPY["zh-CN"].commands)[0];
   assert.equal(selected?.insertText, "/goal ");
+  assert.equal(
+    getSlashCommandSuggestions("/goal <", UI_COPY.en.commands)[0]?.usage,
+    "/goal <objective>",
+  );
 });
 
 test("slash command text uses the existing WebSocket message contract", () => {
-  const command = getSlashCommandSuggestions("/compact")[0];
+  const command = getSlashCommandSuggestions("/compact", UI_COPY.en.commands)[0];
   assert.deepEqual(
     createWebSocketClientMessage("chat-1", "session-1", command.insertText),
     {
@@ -122,11 +221,11 @@ test("connection state reports connecting, connected, disconnected, and errors",
 
   state = markDisconnected(state);
   assert.equal(state.connectionStatus, "disconnected");
-  assert.equal(state.error, "The Nanobot WebSocket connection was closed.");
+  assert.deepEqual(state.error, uiError("connection_closed"));
 
-  state = markConnectionError(state, "Could not connect to Nanobot.");
+  state = markConnectionError(state, rawError("Could not connect to Nanobot."));
   assert.equal(state.connectionStatus, "error");
-  assert.equal(state.error, "Could not connect to Nanobot.");
+  assert.deepEqual(state.error, rawError("Could not connect to Nanobot."));
 });
 
 test("a stream interruption discards unconfirmed output before persisted history replaces it", () => {
@@ -155,7 +254,7 @@ test("a stream interruption discards unconfirmed output before persisted history
 
   state = markReconnectFailed(state);
   assert.equal(state.connectionStatus, "error");
-  assert.match(state.error, /Could not reconnect/);
+  assert.deepEqual(state.error, uiError("reconnect_failed"));
 });
 
 test("connection lifecycle retries with bounded incremental delays and reconnects once", () => {
@@ -368,10 +467,10 @@ test("authentication state blocks sending until it succeeds or is not required",
   state = applyServerEvent(state, { type: "authenticated" });
   assert.equal(state.authenticationStatus, "authenticated");
 
-  state = markAuthenticationFailed(state, "Authentication failed.");
+  state = markAuthenticationFailed(state, uiError("auth_failed"));
   assert.equal(state.authenticationStatus, "failed");
   assert.equal(state.connectionStatus, "error");
-  assert.equal(state.error, "Authentication failed.");
+  assert.deepEqual(state.error, uiError("auth_failed"));
 
   state = applyServerEvent(markConnected(createInitialChatState()), {
     type: "ready",
@@ -406,6 +505,19 @@ test("saved-session history replaces visible chat state without mixing sessions"
   );
   assert.equal(state.isSending, false);
   assert.equal(state.activeAssistantId, null);
+});
+
+test("the app owns and persists language without replacing conversation state", async () => {
+  const appSource = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+
+  assert.match(
+    appSource,
+    /useState\<Language\>\(\(\) =>\s*readStoredLanguage\(window\.localStorage\)/,
+  );
+  assert.match(appSource, /document\.documentElement\.lang = language/);
+  assert.match(appSource, /storeLanguage\(window\.localStorage, language\)/);
+  assert.match(appSource, /<LanguageToggle[\s\S]*?language=\{language\}/);
+  assert.match(appSource, /getSlashCommandSuggestions\(draft, copy\.commands\)/);
 });
 
 test("message visibility is preserved and hidden history is excluded from the rendered list", () => {
@@ -614,7 +726,27 @@ test("session API failures retain a clear status and error message", async () =>
       (error) =>
         error instanceof SessionApiError &&
         error.status === 404 &&
-        error.message === "Session was not found",
+        error.message === "Session was not found" &&
+        error.uiErrorCode === undefined,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("front-end session API failures expose a localizable error code", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("offline");
+  };
+
+  try {
+    await assert.rejects(
+      fetchSessionSummaries("http://127.0.0.1:8000"),
+      (error) =>
+        error instanceof SessionApiError &&
+        error.status === 0 &&
+        error.uiErrorCode === "session_api_unreachable",
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -745,7 +877,7 @@ test("server errors complete an active turn and remain visible", () => {
   });
 
   assert.equal(state.isSending, false);
-  assert.equal(state.error, "Message could not be accepted");
+  assert.deepEqual(state.error, rawError("Message could not be accepted"));
 });
 
 test("assistant output renders safe GitHub-flavored Markdown", () => {
@@ -755,6 +887,7 @@ test("assistant output renders safe GitHub-flavored Markdown", () => {
       content: "# Heading\n\n**bold** and `code`\n\n| A | B |\n| - | - |\n| 1 | 2 |",
       isStreaming: false,
       toolCalls: [],
+      copy: UI_COPY.en.messages,
     }),
   );
 
@@ -777,10 +910,11 @@ test("assistant tool calls render as details instead of an empty Markdown reply"
           arguments: { path: "README.md" },
         },
       ],
+      copy: UI_COPY["zh-CN"].messages,
     }),
   );
 
-  assert.match(markup, /Called read_file/);
+  assert.match(markup, /调用 read_file/);
   assert.match(markup, /README.md/);
   assert.doesNotMatch(markup, /Thinking/);
 });
@@ -792,10 +926,11 @@ test("an empty assistant response without tool calls still renders Thinking", ()
       content: "",
       isStreaming: true,
       toolCalls: [],
+      copy: UI_COPY["zh-CN"].messages,
     }),
   );
 
-  assert.match(markup, /Thinking/);
+  assert.match(markup, /思考中/);
 });
 
 test("user content remains plain text rather than Markdown", () => {
@@ -804,6 +939,7 @@ test("user content remains plain text rather than Markdown", () => {
       role: "user",
       content: "**not bold** <script>ignored()</script>",
       isStreaming: false,
+      copy: UI_COPY.en.messages,
     }),
   );
 

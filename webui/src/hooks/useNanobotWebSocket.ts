@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { rawError, uiError } from "../i18n";
 
 import {
   createWebSocketAuthenticationMessage,
@@ -40,9 +41,6 @@ type UseNanobotWebSocketOptions = {
   authToken?: string;
 };
 
-const MISSING_URL_ERROR = "VITE_NANOBOT_WEBSOCKET_URL is not configured.";
-const INVALID_EVENT_ERROR = "Received an invalid message from Nanobot.";
-
 /** Connect one browser chat session to Nanobot's existing WebSocket Channel. */
 export function useNanobotWebSocket({
   url,
@@ -60,7 +58,7 @@ export function useNanobotWebSocket({
   const handleServerMessage = useCallback((data: unknown) => {
     if (typeof data !== "string") {
       setState((currentState) =>
-        markServerError(currentState, INVALID_EVENT_ERROR),
+        markServerError(currentState, uiError("invalid_server_event")),
       );
       return;
     }
@@ -69,7 +67,7 @@ export function useNanobotWebSocket({
       const event = parseServerEvent(JSON.parse(data));
       if (event === null) {
         setState((currentState) =>
-          markServerError(currentState, INVALID_EVENT_ERROR),
+          markServerError(currentState, uiError("invalid_server_event")),
         );
         return;
       }
@@ -82,7 +80,7 @@ export function useNanobotWebSocket({
           setState((currentState) =>
             markAuthenticationFailed(
               currentState,
-              "Nanobot authentication requires a configured browser token.",
+              uiError("auth_token_required"),
             ),
           );
           connectionRef.current?.close();
@@ -100,7 +98,7 @@ export function useNanobotWebSocket({
           setState((currentState) =>
             markAuthenticationFailed(
               currentState,
-              "Nanobot authentication could not be completed.",
+              uiError("auth_incomplete"),
             ),
           );
           connection?.close();
@@ -113,7 +111,12 @@ export function useNanobotWebSocket({
           event.code === "authentication_required")
       ) {
         setState((currentState) =>
-          markAuthenticationFailed(currentState, "Nanobot authentication failed."),
+          markAuthenticationFailed(
+            currentState,
+            event.message.trim()
+              ? rawError(event.message)
+              : uiError("auth_failed"),
+          ),
         );
         connectionRef.current?.close();
         return;
@@ -128,7 +131,7 @@ export function useNanobotWebSocket({
       setState((currentState) => applyServerEvent(currentState, event));
     } catch {
       setState((currentState) =>
-        markServerError(currentState, INVALID_EVENT_ERROR),
+        markServerError(currentState, uiError("invalid_server_event")),
       );
     }
   }, [authToken]);
@@ -136,7 +139,7 @@ export function useNanobotWebSocket({
   useEffect(() => {
     if (!url) {
       setState((currentState) =>
-        markConnectionError(currentState, MISSING_URL_ERROR),
+        markConnectionError(currentState, uiError("missing_websocket_url")),
       );
       return;
     }
@@ -183,7 +186,7 @@ export function useNanobotWebSocket({
         setState((currentState) =>
           markServerError(
             currentState,
-            "Nanobot is not connected. Wait for the connection before sending.",
+            uiError("not_connected_send"),
           ),
         );
         return false;
@@ -195,7 +198,7 @@ export function useNanobotWebSocket({
         setState((currentState) =>
           markServerError(
             currentState,
-            "Nanobot authentication is not ready. Wait for the connection before sending.",
+            uiError("auth_not_ready"),
           ),
         );
         return false;
@@ -219,7 +222,7 @@ export function useNanobotWebSocket({
       setState((currentState) =>
         markServerError(
           currentState,
-          "Nanobot is not connected. The current generation could not be stopped.",
+          uiError("not_connected_stop"),
         ),
       );
       return false;
@@ -243,7 +246,7 @@ export function useNanobotWebSocket({
     const connection = connectionRef.current;
     if (!url || connection === null) {
       setState((currentState) =>
-        markConnectionError(currentState, MISSING_URL_ERROR),
+        markConnectionError(currentState, uiError("missing_websocket_url")),
       );
       return false;
     }

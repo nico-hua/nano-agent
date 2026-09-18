@@ -12,7 +12,7 @@
 4. `webui/src/hooks/useNanobotWebSocket.ts`：连接、认证、发送和接收事件。
 5. `webui/src/hooks/chatState.ts`：聊天状态如何被纯函数更新。
 6. `webui/src/hooks/webSocketConnection.ts`：断线重连和旧连接回调隔离。
-7. `webui/src/api/sessions.ts`、`components/` 与 `commands.ts`：会话 API、消息展示和命令提示。
+7. `webui/src/i18n.ts`、`api/sessions.ts`、`components/` 与 `commands.ts`：中英文 UI 文案、会话 API、消息展示和命令提示。
 
 ## 1. 本项目实际用到的 React 概念
 
@@ -20,13 +20,16 @@
 
 React 组件通常是“接收数据，返回界面描述”的函数。返回值中的 `<section>`、`<button>` 这类写法叫 JSX，可以把它理解为写在 TypeScript 中的 HTML 模板。
 
-例如 `App.tsx` 的默认导出 `App` 是整个页面组件；`MessageContent` 和 `CommandSuggestionPanel` 是被 `App` 组合使用的小组件：
+例如 `App.tsx` 的默认导出 `App` 是整个页面组件；`LanguageToggle`、`MessageContent` 和 `CommandSuggestionPanel` 是被 `App` 组合使用的小组件：
 
 ```tsx
-<MessageContent {...message} />
+<LanguageToggle language={language} copy={copy.language} onChange={setLanguage} />
+
+<MessageContent {...message} copy={copy.messages} />
 
 <CommandSuggestionPanel
   suggestions={commandSuggestions}
+  ariaLabel={copy.commands.panelLabel}
   onSelect={handleCommandSelection}
 />
 ```
@@ -40,6 +43,7 @@ Props 是组件的输入参数。`CommandSuggestionPanel` 的 Props 明确声明
 ```ts
 type CommandSuggestionPanelProps = {
   suggestions: readonly SlashCommandSuggestion[];
+  ariaLabel: string;
   onSelect: (insertText: string) => void;
 };
 ```
@@ -59,8 +63,9 @@ const [sessions, setSessions] = useState<SessionInfo[]>([]);
 ```
 
 - `draft` 是输入框当前文字；`setDraft` 后，受控的 `<textarea value={draft}>` 会显示新值。
-- `sessionId` 是浏览器当前选择的会话标识。切换会话或点击 **New session** 会更新它。
+- `sessionId` 是浏览器当前选择的会话标识。切换会话或点击“新建会话”会更新它。
 - `sessions` 是左侧栏的会话摘要列表。
+- `language` 是界面语言，默认中文并写入 `localStorage`；它不属于网络 Hook，因此切换语言不会重建连接或清空会话状态。
 
 聊天消息和连接状态没有散落在 `App` 中，而是由 `useNanobotWebSocket` 内部的 `ChatState` 管理。这样状态更新规则可以独立测试。
 
@@ -114,7 +119,7 @@ React 通过 JSX 属性注册浏览器事件。当前页面中的例子：
 ```tsx
 {messages.map((message) => (
   <li key={message.id}>
-    <MessageContent {...message} />
+    <MessageContent {...message} copy={copy.messages} />
   </li>
 ))}
 ```
@@ -148,7 +153,9 @@ webui/
 │   │   └── sessions.ts           # 只读 Session HTTP API 客户端
 │   ├── components/
 │   │   ├── CommandSuggestionPanel.tsx
-│   │   └── MessageContent.tsx
+│   │   ├── LanguageToggle.tsx
+│   │   ├── MessageContent.tsx
+│   │   └── SessionDeleteButton.tsx
 │   ├── hooks/
 │   │   ├── chatState.ts          # 纯聊天状态转换函数，不是 React 组件
 │   │   ├── useNanobotWebSocket.ts
@@ -159,6 +166,7 @@ webui/
 │   ├── App.css                   # 页面、消息、命令面板的局部样式
 │   ├── commands.ts               # 前端命令提示目录与过滤函数
 │   ├── conversationScroll.ts     # 自动滚动判断的纯工具函数
+│   ├── i18n.ts                   # 中英文 UI 词典、格式化和错误展示模型
 │   ├── index.css                 # 全局视口和基础样式
 │   ├── main.tsx                  # React 浏览器入口
 │   └── vite-env.d.ts             # Vite 环境变量类型声明
@@ -176,15 +184,17 @@ webui/
 | 文件 | 负责什么 | 主要导出 | 被谁使用 | 主要依赖 |
 | --- | --- | --- | --- | --- |
 | `main.tsx` | 找到 `#root` 并启动 React | 无业务导出 | `index.html` | `react-dom/client`、`App`、`index.css` |
-| `App.tsx` | 页面编排、会话选择、输入与滚动 | 默认 `App` | `main.tsx` | Session API、WebSocket Hook、组件、样式 |
+| `App.tsx` | 页面编排、界面语言、会话选择、输入与滚动 | 默认 `App` | `main.tsx` | i18n、Session API、WebSocket Hook、组件、样式 |
+| `i18n.ts` | 中英文 UI 词典、格式化、语言持久化与错误展示模型 | `UI_COPY`、语言和错误辅助函数 | `App.tsx`、状态/API、组件、测试 | 浏览器 `localStorage`、`Intl` |
 | `types/protocol.ts` | 定义并校验浏览器与后端交换的数据 | 事件/消息类型、解析与构造函数 | Hook、Session API、测试 | 无 UI 依赖 |
 | `hooks/chatState.ts` | 聊天、连接、流式状态的纯转换 | `ChatState` 与多个状态函数 | `useNanobotWebSocket`、测试 | `protocol.ts` 类型 |
 | `hooks/useNanobotWebSocket.ts` | React 层的连接、认证、发送、接收 | `useNanobotWebSocket` | `App.tsx` | 状态函数、协议函数、连接管理器 |
 | `hooks/webSocketConnection.ts` | 命令式 WebSocket 生命周期与有限重连 | `createWebSocketConnection` | WebSocket Hook、测试 | 浏览器 `WebSocket`、计时器 |
-| `api/sessions.ts` | 调用只读会话 API 并解析响应 | `fetchSessionSummaries`、`fetchSessionHistory`、`createSessionId` | `App.tsx`、测试 | `fetch`、协议类型 |
+| `api/sessions.ts` | 调用会话查询/删除 API 并解析响应 | 查询、删除、ID 与 `SessionApiError` | `App.tsx`、测试 | `fetch`、协议类型、i18n 错误码 |
+| `components/LanguageToggle.tsx` | 显示中英文切换控件 | `LanguageToggle` | `App.tsx` | i18n 类型 |
 | `components/MessageContent.tsx` | 渲染一条消息、工具调用和 Markdown | `MessageContent` | `App.tsx` | `react-markdown`、`remark-gfm` |
 | `components/CommandSuggestionPanel.tsx` | 显示可点击的斜杠命令建议 | `CommandSuggestionPanel` | `App.tsx` | `commands.ts` 类型 |
-| `commands.ts` | 前端命令提示数据与前缀过滤 | `SLASH_COMMAND_SUGGESTIONS`、`getSlashCommandSuggestions` | `App.tsx`、测试 | 无网络依赖 |
+| `commands.ts` | 根据当前语言生成命令提示并执行前缀过滤 | `getSlashCommandSuggestions` | `App.tsx`、测试 | i18n 命令词典 |
 | `conversationScroll.ts` | 判断用户是否接近对话底部 | `isNearConversationBottom` | `App.tsx`、测试 | 无 React 依赖 |
 | `App.css` / `index.css` | 视口布局、消息样式和全局基础样式 | 无 | 入口和 `App` | 浏览器 CSS |
 
@@ -322,11 +332,13 @@ Vite 加载 `index.html`，其中的 `<script type="module" src="/src/main.tsx">
 - 用户消息以纯文本 `<p>` 渲染，不作为 Markdown 解释。
 - 助手消息使用 `react-markdown` 和 `remark-gfm` 渲染 GitHub 风格 Markdown。
 - 使用 `skipHtml`，不启用原始 HTML 渲染。
-- tool call 使用 `<details>` 展示工具名称和格式化 JSON 参数；只有没有正文且没有 tool call 时才显示 `Thinking...`。
+- tool call 使用 `<details>` 展示工具名称和格式化 JSON 参数；中文摘要形如“调用 list_dir”，工具名和参数保持后端原文。只有没有正文且没有 tool call 时才显示当前语言对应的“思考中……”或 `Thinking...`。
+
+`LanguageToggle.tsx`：只接收当前语言、语言文案和 `onChange` 回调。`App` 持有语言状态并写入 `localStorage`，切换语言不会重建 WebSocket、切换会话或清空草稿。
 
 `CommandSuggestionPanel.tsx`：只显示建议并回调 `onSelect`。它没有发送能力；点击命令只填充输入框，用户仍需手动发送。
 
-`commands.ts`：维护前端提示目录和前缀过滤。它不是后端 `CommandRouter` 的替代实现，不能在这里新增或改变命令业务语义。
+`commands.ts`：维护稳定的命令插入文本，从当前语言词典取得用法和说明后执行前缀过滤。它不是后端 `CommandRouter` 的替代实现，不能在这里新增或改变命令业务语义。
 
 `conversationScroll.ts`：用距底部 48px 的阈值判断是否继续自动滚动。它独立于 React，便于测试。
 
@@ -391,7 +403,7 @@ WebSocket open
 ### 切换、新建与重连
 
 - 点击左侧 Session：先清空可见消息，再更新 `sessionId`；Effect 读取新历史。请求序号避免旧请求晚返回时覆盖新会话。
-- 点击 **New session**：只生成新 ID 和清空当前 UI，不删除旧 Session，也不发送 `/new`。
+- 点击“新建会话”/ **New session**：只生成新 ID 和清空当前 UI，不删除旧 Session，也不发送 `/new`。
 - 网络断开：状态层丢弃未确认的助手流式消息，连接管理器有限次重连。
 - 重连成功：`connectionVersion` 变化，`App` 重新读取当前 Session 的持久化历史。项目不实现流式断点续传，因此不会尝试恢复未持久化的 delta。
 

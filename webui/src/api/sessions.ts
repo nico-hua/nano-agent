@@ -4,6 +4,7 @@ import type {
   SessionInfo,
   ToolCall,
 } from "../types/protocol.js";
+import type { UiErrorCode } from "../i18n.js";
 
 export type { SessionHistory, SessionInfo } from "../types/protocol.js";
 
@@ -11,6 +12,7 @@ export class SessionApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly uiErrorCode?: UiErrorCode,
   ) {
     super(message);
     this.name = "SessionApiError";
@@ -98,6 +100,7 @@ async function requestJson(
     throw new SessionApiError(
       0,
       "Could not reach the local Nanobot session API.",
+      "session_api_unreachable",
     );
   }
 
@@ -108,6 +111,7 @@ async function requestJson(
     throw new SessionApiError(
       response.status,
       "Nanobot returned an invalid session API response.",
+      "session_api_invalid_response",
     );
   }
 
@@ -208,7 +212,11 @@ function errorMessage(payload: unknown): string {
 }
 
 function invalidResponse(): SessionApiError {
-  return new SessionApiError(502, "Nanobot returned invalid session data.");
+  return new SessionApiError(
+    502,
+    "Nanobot returned invalid session data.",
+    "session_data_invalid",
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

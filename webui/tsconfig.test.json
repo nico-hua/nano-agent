@@ -13,9 +13,11 @@
   },
   "include": [
     "src/components/MessageContent.tsx",
+    "src/components/LanguageToggle.tsx",
     "src/components/SessionDeleteButton.tsx",
     "src/commands.ts",
     "src/conversationScroll.ts",
+    "src/i18n.ts",
     "src/hooks/chatState.ts",
     "src/hooks/webSocketConnection.ts",
     "src/api/sessions.ts",
