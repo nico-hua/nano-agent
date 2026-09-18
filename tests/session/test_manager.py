@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -134,6 +136,51 @@ class SessionManagerTest(unittest.TestCase):
             self.assertEqual(restored, saved)
             self.assertEqual(restored.summary, "The first question was answered.")
             self.assertEqual(restored.summary_until, 2)
+
+    def test_system_prompt_and_last_request_time_are_recovered(self) -> None:
+        last_request_at = datetime(2026, 9, 18, 8, 30, tzinfo=timezone.utc)
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = SessionManager(temporary_directory)
+            saved = manager.save(
+                manager.get_or_create("cached-prompt-session").with_request_state(
+                    "Stable system prompt.",
+                    last_request_at,
+                )
+            )
+
+            restored = SessionManager(temporary_directory).get_or_create(
+                "cached-prompt-session"
+            )
+
+            self.assertEqual(restored, saved)
+            self.assertEqual(restored.system_prompt, "Stable system prompt.")
+            self.assertEqual(restored.last_request_at, last_request_at)
+
+    def test_legacy_session_header_without_request_state_uses_empty_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            manager = SessionManager(temporary_directory)
+            manager.save(manager.get_or_create("legacy-session"))
+            session_path = next((Path(temporary_directory) / "sessions").glob("*.jsonl"))
+            records = [
+                json.loads(line)
+                for line in session_path.read_text(encoding="utf-8").splitlines()
+            ]
+            records[0].pop("system_prompt")
+            records[0].pop("last_request_at")
+            session_path.write_text(
+                "".join(
+                    json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+                    for record in records
+                ),
+                encoding="utf-8",
+            )
+
+            restored = SessionManager(temporary_directory).get_or_create(
+                "legacy-session"
+            )
+
+            self.assertIsNone(restored.system_prompt)
+            self.assertIsNone(restored.last_request_at)
 
     def test_failed_replace_keeps_the_existing_session_file_intact(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

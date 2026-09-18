@@ -102,6 +102,11 @@ class JsonlSessionStorage:
             key=_required_text(header, "key"),
             created_at=_timestamp_from_record(header, "created_at"),
             updated_at=_timestamp_from_record(header, "updated_at"),
+            system_prompt=_optional_system_prompt(header),
+            last_request_at=_optional_timestamp_from_record(
+                header,
+                "last_request_at",
+            ),
             messages=messages,
             summary=_optional_summary(header),
             summary_until=_optional_summary_until(header),
@@ -116,6 +121,12 @@ def _serialize_session(session: Session) -> str:
             "key": session.key,
             "created_at": session.created_at.isoformat(),
             "updated_at": session.updated_at.isoformat(),
+            "system_prompt": session.system_prompt,
+            "last_request_at": (
+                session.last_request_at.isoformat()
+                if session.last_request_at is not None
+                else None
+            ),
             "summary": session.summary,
             "summary_until": session.summary_until,
             "goal_state": (
@@ -239,6 +250,17 @@ def _optional_summary(record: Mapping[str, Any]) -> str | None:
     return value
 
 
+def _optional_system_prompt(record: Mapping[str, Any]) -> str | None:
+    value = record.get("system_prompt")
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError("Session record system_prompt must be a string or null")
+    if not value.strip():
+        raise ValueError("Session record system_prompt must not be blank")
+    return value
+
+
 def _optional_visibility(record: Mapping[str, Any]) -> bool:
     value = record.get("is_visible", True)
     if not isinstance(value, bool):
@@ -271,3 +293,12 @@ def _timestamp_from_record(record: Mapping[str, Any], name: str) -> datetime:
     if timestamp.tzinfo is None:
         raise ValueError(f"Session record {name} must include a timezone")
     return timestamp
+
+
+def _optional_timestamp_from_record(
+    record: Mapping[str, Any],
+    name: str,
+) -> datetime | None:
+    if record.get(name) is None:
+        return None
+    return _timestamp_from_record(record, name)

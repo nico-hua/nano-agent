@@ -240,17 +240,17 @@ MCP 工具不同于 builtin：**MCPProvider**（**nanobot/mcp/provider.py**）�
 
 ### 6.1 Session 是完整短期对话的持久化边界
 
-**Session**（**nanobot/session/models.py**）保存稳定 key、时间、完整 LLM messages、可选 summary/summary_until 与可选 GoalState。
+**Session**（**nanobot/session/models.py**）保存稳定 key、创建/更新时间、最近请求时间、最近使用的基础 system prompt、完整 LLM messages、可选 summary/summary_until 与可选 GoalState。
 
 **SessionManager**（**nanobot/session/manager.py**）负责 get、get_or_create、save、list 和 Goal 的共享持久化操作。**JsonlSessionStorage**（**nanobot/session/storage.py**）将每个会话存入 workspace/sessions 中独立 JSONL 文件，文件名由 session key 的 SHA-256 生成；写入使用同目录临时文件和替换。
 
-Session 保存完整 user、assistant、tool LLM 消息链。AgentLoop 不把每次重新构建的 system prompt 写入 Session，并且仅在 AgentRunner 返回完整序列后一次性保存历史、当前 user 与新增 assistant/tool 消息。
+Session 保存完整 user、assistant、tool LLM 消息链，但基础 system prompt 只保存在首行 `type=session` 的头记录中，不作为 `type=message` 写入消息链。AgentLoop 仅在 AgentRunner 返回完整序列后，一次性保存历史、当前 user、新增 assistant/tool 消息、本轮基础 system prompt 与独立的 `last_request_at`；失败或取消不会推进该时间。
 
 每条 BaseMessage 都带有默认值为 true 的 **is_visible** 展示标记；JsonlSessionStorage 持久化该字段，读取旧记录时若字段缺失则按 true 处理。该标记不改变发送给 Provider 的完整上下文，只供 Session API、摘要列表和 Web UI 决定哪些消息面向用户展示。对于 source=cron 和异步 source=subagent 的内部 turn，AgentLoop 仅将本轮最后一条 AIMessage 标为可见，其余新增 HumanMessage、AIMessage 和 ToolMessage 均隐藏；已有历史和其他来源保持原值。
 
 ### 6.2 ContextBuilder 是请求态
 
-**ContextBuilder**（**nanobot/agent/context.py**）每次请求新建 system prompt，并读取 workspace 下可选的 AGENTS.md、SOUL.md、USER.md、MEMORY.md 与 Skills。
+**ContextBuilder**（**nanobot/agent/context.py**）可以使用 AgentLoop 选出的基础 system prompt，也可以从 workspace 下可选的 AGENTS.md、SOUL.md、USER.md、MEMORY.md 与 Skills 新建提示词。若 Session 已有非空基础提示词，且距离 `last_request_at` 不超过 30 分钟，AgentLoop 会复用它；否则重新构建。摘要与显式激活的单轮 Skill 在基础提示词之后动态追加，因此不会被冻结到缓存字段中。
 
 它的输入是 Session 历史、当前 HumanMessage、已保存摘要和可用工具；输出是发送给 Provider 的 LLM 消息序列。它不保存 Session，也不执行 Skill 内容。
 
@@ -284,6 +284,7 @@ AgentLoop 在完整 turn 保存后异步调度压缩，重新获取同一个 ses
 | 数据 | 位置 | 用途 | 进入普通请求上下文？ |
 | --- | --- | --- | --- |
 | Session.messages | workspace/sessions/*.jsonl | 当前会话完整短期历史与工具链 | 是，预算内裁剪后 |
+| system_prompt / last_request_at | Session JSONL header | 稳定 30 分钟内请求的基础提示词前缀 | 是，命中时复用；超时重建 |
 | summary / summary_until | Session JSONL header | 压缩较早会话历史 | 是，合入 system prompt |
 | MEMORY.md | workspace/memory/MEMORY.md | workspace 级稳定事实、偏好、约定 | 是，每次新读入 system prompt |
 | history.jsonl | workspace/memory/history.jsonl | 长期记忆整理的持久事件队列 | 否 |
@@ -486,7 +487,7 @@ HTTP API
 
 1. **工具消息顺序完整。** 并行执行不能改变协议顺序；每个 AIMessage 的 tool_calls 必须有按原始顺序追加且 ID 对应的 ToolMessage，Goal 用户输入只能在完整工具批次后注入。
 2. **Session 不保存不完整 turn。** AgentLoop 只在 AgentRunner 返回后保存 user、assistant、tool 消息；取消、Provider 错误和未完成工具批次不落盘。
-3. **system prompt 不写入 Session。** system prompt、长期记忆、Skills 和摘要都是每次请求重建的上下文。
+3. **基础 system prompt 只写 Session 头部。** 它不进入 `Session.messages`，30 分钟内按 `last_request_at` 复用；摘要和单轮 Skill 仍在请求时动态追加，`/new` 会清除缓存字段。
 4. **同一 Session 串行。** 普通 turn 的读历史、模型调用和保存受同一 session lock 保护；不同 session 不得混入消息。
 5. **流式事件有序且一次收束。** delta/tool_call 用 await 发布；正常流式 turn 只发一次 turn_end，取消只发一次 cancelled turn_end；Provider 错误只发一次 `event="error"`，不伪造 turn_end。
 6. **AgentLoop 不依赖具体 Channel。** 它只处理消息对象和 MessageBus；新增 Channel 不应改写它的核心逻辑。
@@ -532,7 +533,7 @@ HTTP API
 - QQ Channel、静态认证和流式协议的 WebSocket Channel、本地 HTTP API。
 - 独立 React Web UI：会话列表、Markdown、工具调用展示、停止、认证、有限重连和斜杠命令提示。
 
-最新完整离线 Python 测试为 **558 passed, 10 skipped**；前端测试为 **32 passed**，生产构建通过；命令见 **webui/README.md**。
+最新完整离线 Python 测试为 **564 passed, 10 skipped**；前端测试为 **32 passed**，生产构建通过；命令见 **webui/README.md**。
 
 ### 暂时跳过的功能
 

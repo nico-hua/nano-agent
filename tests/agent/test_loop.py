@@ -6,6 +6,7 @@ import asyncio
 import tempfile
 import unittest
 from collections.abc import Awaitable, Callable, Sequence
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
@@ -31,7 +32,7 @@ from nanobot.providers import (
     ToolCallRequest,
     ToolMessage,
 )
-from nanobot.session import SessionCompactor, SessionManager
+from nanobot.session import GoalState, SessionCompactor, SessionManager
 from nanobot.tools import (
     Tool,
     ToolParameter,
@@ -680,8 +681,11 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_provider_error_sends_one_reply_without_persisting_the_turn(self) -> None:
         previous_history = (HumanMessage(content="Previous question."),)
+        previous_request_at = datetime(2026, 9, 18, 8, 30, tzinfo=timezone.utc)
         self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(previous_history)
+            self._sessions.get_or_create("session-1")
+            .with_messages(previous_history)
+            .with_request_state("Previous system prompt.", previous_request_at)
         )
         provider = ScriptedProvider(
             (LLMResponse(error="LLM provider connection failed."),)
@@ -703,10 +707,13 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(response.content, "LLM provider connection failed.")
-        self.assertEqual(self._sessions.get_or_create("session-1").messages, previous_history)
+        saved_session = self._sessions.get_or_create("session-1")
+        self.assertEqual(saved_session.messages, previous_history)
+        self.assertEqual(saved_session.system_prompt, "Previous system prompt.")
+        self.assertEqual(saved_session.last_request_at, previous_request_at)
         self.assertEqual(len(provider.complete_calls), 1)
 
-    async def test_rebuilds_the_system_prompt_for_each_request(self) -> None:
+    async def test_reuses_the_persisted_system_prompt_within_thirty_minutes(self) -> None:
         soul_path = Path(self._temporary_directory.name) / "SOUL.md"
         soul_path.write_text("First style.", encoding="utf-8")
         provider = ScriptedProvider(
@@ -732,14 +739,107 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(first_system_message, SystemMessage)
         self.assertIsInstance(second_system_message, SystemMessage)
         self.assertIn("First style.", first_system_message.content)
-        self.assertIn("Second style.", second_system_message.content)
-        self.assertNotIn("First style.", second_system_message.content)
+        self.assertIn("First style.", second_system_message.content)
+        self.assertNotIn("Second style.", second_system_message.content)
+        saved_session = self._sessions.get_or_create("session-1")
+        self.assertEqual(saved_session.system_prompt, first_system_message.content)
+        self.assertIsNotNone(saved_session.last_request_at)
         self.assertFalse(
             any(
                 isinstance(message, SystemMessage)
-                for message in self._sessions.get_or_create("session-1").messages
+                for message in saved_session.messages
             )
         )
+
+    async def test_rebuilds_an_expired_persisted_system_prompt(self) -> None:
+        soul_path = Path(self._temporary_directory.name) / "SOUL.md"
+        soul_path.write_text("Current style.", encoding="utf-8")
+        expired_at = datetime.now(timezone.utc) - timedelta(minutes=31)
+        self._sessions.save(
+            self._sessions.get_or_create("session-1").with_request_state(
+                "Expired system prompt.",
+                expired_at,
+            )
+        )
+        provider = ScriptedProvider((LLMResponse(content="Current answer."),))
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+
+        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
+
+        system_message = provider.complete_calls[0][0]
+        saved_session = self._sessions.get_or_create("session-1")
+        self.assertIsInstance(system_message, SystemMessage)
+        self.assertIn("Current style.", system_message.content)
+        self.assertNotIn("Expired system prompt.", system_message.content)
+        self.assertEqual(saved_session.system_prompt, system_message.content)
+        self.assertGreater(saved_session.last_request_at, expired_at)
+
+    async def test_reuses_the_persisted_system_prompt_at_the_thirty_minute_boundary(self) -> None:
+        last_request_at = datetime(2026, 9, 18, 8, 30, tzinfo=timezone.utc)
+        self._sessions.save(
+            self._sessions.get_or_create("session-1").with_request_state(
+                "Boundary cached prompt.",
+                last_request_at,
+            )
+        )
+        provider = ScriptedProvider((LLMResponse(content="Boundary answer."),))
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+
+        with patch("nanobot.agent.loop.datetime") as clock:
+            clock.now.return_value = last_request_at + timedelta(minutes=30)
+            await _dispatch(loop, "Boundary question.", "test", "chat-1", "session-1")
+
+        self.assertEqual(
+            provider.complete_calls[0][0],
+            SystemMessage(content="Boundary cached prompt."),
+        )
+
+    async def test_records_completed_internal_inbound_requests(self) -> None:
+        sources = ("cron", "subagent", "goal")
+        provider = ScriptedProvider(
+            tuple(LLMResponse(content=f"{source} answer.") for source in sources)
+        )
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+
+        for source in sources:
+            session_key = f"{source}-session"
+            if source == "goal":
+                self._sessions.save(
+                    self._sessions.get_or_create(session_key).with_goal_state(
+                        GoalState.create("Complete the background goal.")
+                    )
+                )
+            await _dispatch(
+                loop,
+                f"{source} request.",
+                "test",
+                "chat-1",
+                session_key,
+                {"source": source},
+            )
+
+            with self.subTest(source=source):
+                saved_session = self._sessions.get_or_create(session_key)
+                self.assertIsNotNone(saved_session.system_prompt)
+                self.assertIsNotNone(saved_session.last_request_at)
 
     async def test_replaces_a_legacy_persisted_system_message(self) -> None:
         previous_history = (

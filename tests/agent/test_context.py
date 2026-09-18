@@ -78,6 +78,22 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertNotIn("## Agent Style", prompt)
         self.assertNotIn("## User Profile", prompt)
 
+    def test_uses_a_supplied_base_system_prompt_without_rebuilding_workspace_context(self) -> None:
+        self._write("SOUL.md", "Changed workspace style.")
+
+        messages = ContextBuilder(self._workspace).build_request_messages(
+            (),
+            HumanMessage(content="Current question."),
+            system_prompt="Cached base prompt.",
+            summary="Earlier conversation summary.",
+        )
+
+        self.assertEqual(
+            messages[0].content,
+            "Cached base prompt.\n\n## Conversation Summary\n\nEarlier conversation summary.",
+        )
+        self.assertNotIn("Changed workspace style.", messages[0].content)
+
     def test_uses_a_stable_context_file_order(self) -> None:
         self._write("AGENTS.md", "agents")
         self._write("SOUL.md", "soul")

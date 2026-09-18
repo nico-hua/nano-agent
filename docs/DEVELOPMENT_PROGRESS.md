@@ -9,7 +9,7 @@
 - [x] Web UI 会话侧栏新增不可恢复的删除确认；`DELETE /v1/sessions/{session_id}` 由 AgentLoop 统一清理会话关联 Cron、后台 Subagent、Agent/Goal turn 和压缩任务后删除 JSONL，并阻止已排队内部消息重建会话。删除成功后前端进入新的空白浏览器会话；长期记忆保留。
 - [x] 为统一消息模型增加默认值为 `true` 的 `is_visible` 展示标记，并在 Session JSONL 中持久化；旧记录缺少该字段时兼容为可见。展示标记不裁剪完整 Session，也不影响 Provider 上下文。
 - [x] Session 历史 API 返回带 `is_visible` 的 user/assistant 记录（包括隐藏记录），摘要列表只统计可见消息；Web UI 将其映射为 `isVisible`，在状态中保留完整历史并仅在渲染时过滤隐藏消息。
-- [x] 对 `source=cron` 和异步 `source=subagent` 的内部 turn 应用折叠展示策略：本轮回传提示和中间 assistant/tool 消息隐藏，仅最后一条 `AIMessage` 展示；已有历史、同步 `spawn(wait=true)` 和其他来源保持默认展示。最新完整验证为后端 `558 passed, 10 skipped`，Web UI `32 passed`，production build 通过。
+- [x] 对 `source=cron` 和异步 `source=subagent` 的内部 turn 应用折叠展示策略：本轮回传提示和中间 assistant/tool 消息隐藏，仅最后一条 `AIMessage` 展示；已有历史、同步 `spawn(wait=true)` 和其他来源保持默认展示。最新完整验证为后端 `564 passed, 10 skipped`，Web UI `32 passed`，production build 通过。
 
 ### 2026-08-28 之前（早期记录未标注具体日期）
 
@@ -30,8 +30,8 @@
 ### 2026-08-31
 
 - [x] 实现 `Session`、`SessionManager` 和 JSONL 持久化存储。每个 session 使用安全文件名并通过临时文件 + 原子替换保存；默认目录为 `<workspace>/sessions/`，重启后可恢复完整 user、assistant、tool call 与 tool result 历史。
-- [x] 将 Session 接入 `AgentLoop`：非空 `session_id` 优先作为 session key，否则使用 `channel:chat_id`；当前用户消息在模型调用前保存，成功后按顺序保存本轮 assistant/tool 消息。system prompt 不写入 Session。
-- [x] 实现 `ContextBuilder`：每次请求动态读取 workspace 的 `AGENTS.md`、`SOUL.md`、`USER.md`，并注入身份与 workspace 信息。
+- [x] 将 Session 接入 `AgentLoop`：非空 `session_id` 优先作为 session key，否则使用 `channel:chat_id`；仅在 AgentRunner 成功后按顺序保存当前 user 与本轮 assistant/tool 消息。基础 system prompt 与 `last_request_at` 保存到 `type=session` 头记录，不进入消息链；普通、cron、subagent 和 goal turn 使用同一记录规则，失败或取消不推进请求时间。
+- [x] 实现 `ContextBuilder`：从 workspace 的 `AGENTS.md`、`SOUL.md`、`USER.md`、长期记忆与 Skills 构建基础 system prompt；Session 在最近成功请求后的 30 分钟内复用该基础提示词，超时后重建，摘要与单轮 Skill 始终动态追加。`/new` 会清除已缓存提示词与最近请求时间。
 - [x] 实现历史裁剪与稳定 Token 估算：文本、消息结构、tool call 与工具 schema 都计入估算；system prompt、summary、当前用户消息和输出预留先占用总窗口，剩余预算仅用于完整历史轮次，避免拆开 tool call/tool result。
 - [x] 实现 `SessionCompactor`：AgentRunner 成功且完整消息保存后异步压缩较早完整轮次，持久化 `summary` 与 `summary_until`，保留完整原始历史和最近原始消息；摘要以 `## Conversation Summary` 合并进当轮 system prompt。
 - [x] 实现长期记忆第一、二阶段：`MemoryStore` 动态读取 `<workspace>/memory/MEMORY.md`；`MemoryConsolidator` 通过一次专用 Provider 请求生成完整替换式记忆内容，只在有效非空结果下原子写入。

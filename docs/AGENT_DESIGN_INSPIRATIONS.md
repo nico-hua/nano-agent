@@ -174,7 +174,7 @@ Session 使用独立 JSONL 文件，API 有只读 list/get；长期记忆是分�
 
 **解决的问题**
 
-当前 `ContextBuilder` 每次构造完整 system prompt。即使其中大部分静态内容未变化，Provider 也只看到一个普通字符串，项目无法明确区分稳定前缀、Session 上下文和当前 turn 注入，更难利用不同厂商的 prompt caching 能力。
+当前项目已在 Session 内复用 30 分钟有效的基础 system prompt，从而避免短时间内 workspace 内容变化破坏公共缓存前缀；但 Provider 仍只看到一个普通字符串，项目尚未显式区分稳定前缀、Session 上下文和当前 turn 注入，也没有利用不同厂商的专用 prompt caching 控制。
 
 **Hermes 的设计**
 
@@ -182,11 +182,11 @@ Hermes 的 prompt builder 按稳定、上下文相关和易变内容分层，并
 
 **当前项目状态**
 
-已有 `ContextBuilder`、system/session/current-message 预算、Skill 分区和摘要，但输出仍是扁平消息序列，Provider 没有缓存提示或 capability 声明。
+已有 `ContextBuilder`、system/session/current-message 预算、Skill 分区、摘要，以及保存在 Session 头部的基础提示词和最近请求时间；30 分钟内可复用基础提示词，摘要与单轮 Skill 仍动态追加。输出仍是扁平消息序列，Provider 没有缓存提示或 capability 声明。
 
 **最小实现**
 
-让 `ContextBuilder` 内部先生成 `PromptSections(stable, session, turn)`，最后仍兼容地输出 `SystemMessage`；为支持 prompt cache 的 Provider 增加可选 adapter，只标记稳定段。第一阶段不改变 Session 格式，也不把 Provider 专有字段泄漏到 AgentLoop。
+下一阶段让 `ContextBuilder` 内部先生成 `PromptSections(stable, session, turn)`，最后仍兼容地输出 `SystemMessage`；为支持 prompt cache 的 Provider 增加可选 adapter，只标记稳定段，同时不把 Provider 专有字段泄漏到 AgentLoop。
 
 **涉及模块**
 

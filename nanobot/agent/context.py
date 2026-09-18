@@ -104,6 +104,7 @@ class ContextBuilder:
         history: Sequence[BaseMessage],
         current_message: HumanMessage,
         *,
+        system_prompt: str | None = None,
         summary: str | None = None,
         summary_until: int = 0,
         tools: Sequence[Tool] = (),
@@ -113,6 +114,11 @@ class ContextBuilder:
         _validate_messages(history)
         if not isinstance(current_message, HumanMessage):
             raise TypeError("ContextBuilder current_message must be a HumanMessage")
+        if system_prompt is not None:
+            if not isinstance(system_prompt, str):
+                raise TypeError("ContextBuilder system_prompt must be a string or None")
+            if not system_prompt.strip():
+                raise ValueError("ContextBuilder system_prompt must not be blank")
         if summary is not None and (not isinstance(summary, str) or not summary.strip()):
             raise ValueError("ContextBuilder summary must be a non-empty string or None")
         if not isinstance(summary_until, int) or isinstance(summary_until, bool):
@@ -128,7 +134,7 @@ class ContextBuilder:
             normalized_history = normalized_history[:-1]
         if summary_until > len(normalized_history):
             raise ValueError("ContextBuilder summary_until exceeds the history length")
-        system_prompt = self.build_system_prompt()
+        system_prompt = system_prompt or self.build_system_prompt()
         if summary is not None:
             system_prompt = f"{system_prompt}\n\n## Conversation Summary\n\n{summary}"
         active_skills = self._build_active_skill_context(current_message.content)
