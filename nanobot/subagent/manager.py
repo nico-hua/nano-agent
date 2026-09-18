@@ -224,6 +224,29 @@ class SubagentManager:
         logger.info("Background subagent task cancelled (task_id=%s)", task_id)
         return True
 
+    async def cancel_session(self, session_key: str) -> int:
+        """Cancel and await every active background task owned by one session."""
+
+        if not isinstance(session_key, str) or not session_key.strip():
+            raise ValueError("session_key must be a non-empty string")
+        records = tuple(
+            task
+            for task in self._background_task_records.values()
+            if task.parent_session_key == session_key and not task.is_final
+        )
+        background_tasks = tuple(
+            task
+            for record in records
+            if (task := self._background_tasks.get(record.task_id)) is not None
+        )
+        cancelled_count = sum(
+            self.cancel_background(record.task_id, session_key=session_key)
+            for record in records
+        )
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+        return cancelled_count
+
     def start_background(
         self,
         task: str,

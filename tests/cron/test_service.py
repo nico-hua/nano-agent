@@ -59,6 +59,51 @@ class CronServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self._service.get("repeat"))
         self.assertEqual(self._service.list_tasks(), ())
 
+    async def test_removes_all_tasks_for_one_session(self) -> None:
+        self._service = CronService(_no_op, self._workspace)
+        self._service.add_every(
+            timedelta(seconds=1),
+            task_id="session-a-1",
+            session_key="session-a",
+        )
+        self._service.add_every(
+            timedelta(seconds=2),
+            task_id="session-a-2",
+            session_key="session-a",
+        )
+        self._service.add_every(
+            timedelta(seconds=3),
+            task_id="session-b",
+            session_key="session-b",
+        )
+        self._service.add_every(
+            timedelta(seconds=4),
+            task_id="unscoped",
+        )
+
+        self.assertEqual(self._service.remove_session_tasks("session-a"), 2)
+        self.assertEqual(
+            tuple(task.id for task in self._service.list_tasks()),
+            ("session-b", "unscoped"),
+        )
+        self.assertEqual(self._service.remove_session_tasks("session-a"), 0)
+
+        restored = CronService(_no_op, self._workspace)
+        await restored.start()
+        try:
+            self.assertEqual(
+                tuple(task.id for task in restored.list_tasks()),
+                ("session-b", "unscoped"),
+            )
+        finally:
+            await restored.stop()
+
+    async def test_remove_session_tasks_rejects_a_blank_session_key(self) -> None:
+        self._service = CronService(_no_op, self._workspace)
+
+        with self.assertRaisesRegex(ValueError, "non-empty"):
+            self._service.remove_session_tasks("  ")
+
     async def test_rejects_missing_or_invalid_service_callback(self) -> None:
         with self.assertRaisesRegex(TypeError, "callback"):
             CronService(None, self._workspace)  # type: ignore[arg-type]

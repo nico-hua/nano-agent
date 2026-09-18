@@ -8,6 +8,7 @@ import {
 
 import {
   createSessionId,
+  deleteSession,
   fetchSessionHistory,
   fetchSessionSummaries,
   SessionApiError,
@@ -15,6 +16,7 @@ import {
 import { getSlashCommandSuggestions } from "./commands";
 import { CommandSuggestionPanel } from "./components/CommandSuggestionPanel";
 import { MessageContent } from "./components/MessageContent";
+import { SessionDeleteButton } from "./components/SessionDeleteButton";
 import { isNearConversationBottom } from "./conversationScroll";
 import { visibleChatMessages } from "./hooks/chatState";
 import {
@@ -53,6 +55,12 @@ function App() {
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionPendingDeletion, setSessionPendingDeletion] =
+    useState<SessionInfo | null>(null);
+  const [isDeletingSession, setIsDeletingSession] = useState(false);
+  const [deleteSessionError, setDeleteSessionError] = useState<string | null>(
+    null,
+  );
   const conversationRef = useRef<HTMLDivElement>(null);
   const draftInputRef = useRef<HTMLTextAreaElement>(null);
   const shouldFollowLatestRef = useRef(true);
@@ -225,6 +233,46 @@ function App() {
     setSessionId(createSessionId());
   }
 
+  function requestSessionDeletion(session: SessionInfo) {
+    setDeleteSessionError(null);
+    setSessionPendingDeletion(session);
+  }
+
+  function cancelSessionDeletion() {
+    if (isDeletingSession) {
+      return;
+    }
+    setDeleteSessionError(null);
+    setSessionPendingDeletion(null);
+  }
+
+  async function confirmSessionDeletion() {
+    const target = sessionPendingDeletion;
+    if (target === null || isDeletingSession) {
+      return;
+    }
+    setIsDeletingSession(true);
+    setDeleteSessionError(null);
+    try {
+      await deleteSession(API_BASE_URL, target.sessionId, AUTH_TOKEN);
+      historyRequestRef.current += 1;
+      shouldFollowLatestRef.current = true;
+      replaceMessages([]);
+      setDraft("");
+      setSessions((current) =>
+        current.filter((session) => session.sessionId !== target.sessionId),
+      );
+      setSessionError(null);
+      setSessionPendingDeletion(null);
+      setSessionId(createSessionId());
+      void refreshSessions();
+    } catch (caughtError) {
+      setDeleteSessionError(errorMessage(caughtError));
+    } finally {
+      setIsDeletingSession(false);
+    }
+  }
+
   function handleCommandSelection(insertText: string) {
     setDraft(insertText);
     draftInputRef.current?.focus();
@@ -278,28 +326,34 @@ function App() {
             <ol>
               {sessions.map((session) => (
                 <li key={session.sessionId}>
-                  <button
-                    type="button"
-                    className={
-                      session.sessionId === sessionId
-                        ? "session-item session-item--active"
-                        : "session-item"
-                    }
-                    onClick={() => selectSession(session.sessionId)}
-                    aria-current={
-                      session.sessionId === sessionId ? "page" : undefined
-                    }
-                  >
-                    <span className="session-item__id">{session.sessionId}</span>
-                    <span className="session-item__preview">
-                      {session.preview || "No visible messages"}
-                    </span>
-                    <span className="session-item__meta">
-                      {session.messageCount} message{session.messageCount === 1 ? "" : "s"}
-                      {" · "}
-                      {formatUpdatedAt(session.updatedAt)}
-                    </span>
-                  </button>
+                  <div className="session-row">
+                    <button
+                      type="button"
+                      className={
+                        session.sessionId === sessionId
+                          ? "session-item session-item--active"
+                          : "session-item"
+                      }
+                      onClick={() => selectSession(session.sessionId)}
+                      aria-current={
+                        session.sessionId === sessionId ? "page" : undefined
+                      }
+                    >
+                      <span className="session-item__id">{session.sessionId}</span>
+                      <span className="session-item__preview">
+                        {session.preview || "No visible messages"}
+                      </span>
+                      <span className="session-item__meta">
+                        {session.messageCount} message{session.messageCount === 1 ? "" : "s"}
+                        {" · "}
+                        {formatUpdatedAt(session.updatedAt)}
+                      </span>
+                    </button>
+                    <SessionDeleteButton
+                      sessionId={session.sessionId}
+                      onDelete={() => requestSessionDeletion(session)}
+                    />
+                  </div>
                 </li>
               ))}
             </ol>
@@ -412,6 +466,50 @@ function App() {
           </form>
         </div>
       </div>
+
+      {sessionPendingDeletion !== null ? (
+        <div className="modal-backdrop">
+          <section
+            className="confirmation-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-session-title"
+            aria-describedby="delete-session-description"
+          >
+            <h2 id="delete-session-title">Delete this session?</h2>
+            <p id="delete-session-description">
+              This session will be permanently deleted and cannot be recovered.
+              Any work still running for it will be stopped first.
+            </p>
+            <p className="confirmation-modal__session">
+              {sessionPendingDeletion.sessionId}
+            </p>
+            {deleteSessionError !== null ? (
+              <p className="confirmation-modal__error" role="alert">
+                {deleteSessionError}
+              </p>
+            ) : null}
+            <div className="confirmation-modal__actions">
+              <button
+                type="button"
+                onClick={cancelSessionDeletion}
+                disabled={isDeletingSession}
+                autoFocus
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="confirmation-modal__delete"
+                onClick={() => void confirmSessionDeletion()}
+                disabled={isDeletingSession}
+              >
+                {isDeletingSession ? "Deleting..." : "Delete session"}
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }

@@ -8,7 +8,7 @@ import unittest
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from nanobot.agent import (
     AgentLoop,
@@ -56,6 +56,37 @@ class ScriptedProvider(LLMProvider):
         del tools, max_tokens, temperature
         self.complete_calls.append(tuple(messages))
         return next(self._responses)
+
+    async def stream(
+        self,
+        messages: Sequence[BaseMessage],
+        tools: Sequence[Tool] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        on_delta: Callable[[str], Awaitable[None]] | None = None,
+    ) -> LLMResponse:
+        raise AssertionError("AgentLoop must not use streaming")
+
+
+class BlockingProvider(LLMProvider):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def complete(
+        self,
+        messages: Sequence[BaseMessage],
+        tools: Sequence[Tool] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> LLMResponse:
+        del messages, tools, max_tokens, temperature
+        self.started.set()
+        try:
+            await asyncio.Future()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
 
     async def stream(
         self,
@@ -231,6 +262,155 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
+
+    async def test_delete_session_returns_false_when_session_is_not_persisted(self) -> None:
+        loop = AgentLoop(
+            AgentRunner(),
+            ScriptedProvider(()),
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+
+        self.assertFalse(await loop.delete_session("missing-session"))
+
+    async def test_delete_session_cancels_active_turn_before_removing_history(self) -> None:
+        self._sessions.save(
+            self._sessions.get_or_create("session-1").with_messages(
+                (HumanMessage(content="Saved question."),)
+            )
+        )
+        self._sessions.save(
+            self._sessions.get_or_create("session-2").with_messages(
+                (HumanMessage(content="Keep me."),)
+            )
+        )
+        provider = BlockingProvider()
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+        active_turn = asyncio.create_task(
+            _dispatch(loop, "Pending question.", "test", "chat-1", "session-1")
+        )
+        await asyncio.wait_for(provider.started.wait(), timeout=1)
+
+        deleted = await loop.delete_session("session-1")
+
+        self.assertTrue(deleted)
+        self.assertTrue(provider.cancelled.is_set())
+        with self.assertRaises(asyncio.CancelledError):
+            await active_turn
+        self.assertIsNone(self._sessions.get("session-1"))
+        self.assertIsNotNone(self._sessions.get("session-2"))
+
+    async def test_delete_session_removes_cron_and_subagent_work(self) -> None:
+        self._sessions.save(self._sessions.get_or_create("session-1"))
+        cron_service = Mock()
+        cron_service.remove_session_tasks.return_value = 2
+        subagent_manager = Mock()
+        subagent_manager.cancel_session = AsyncMock(return_value=1)
+        loop = AgentLoop(
+            AgentRunner(),
+            ScriptedProvider(()),
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+            subagent_manager=subagent_manager,
+            cron_service=cron_service,
+        )
+
+        self.assertTrue(await loop.delete_session("session-1"))
+
+        cron_service.remove_session_tasks.assert_called_once_with("session-1")
+        subagent_manager.cancel_session.assert_awaited_once_with("session-1")
+
+    async def test_delete_session_cancels_its_background_compaction(self) -> None:
+        old_turn = (
+            HumanMessage(content="Old question " * 40),
+            AIMessage(content="Old answer."),
+        )
+        current_turn = (
+            HumanMessage(content="Current question."),
+            AIMessage(content="Current answer."),
+        )
+        self._sessions.save(
+            self._sessions.get_or_create("session-1").with_messages(old_turn)
+        )
+        provider = BackgroundCompactionProvider(
+            (LLMResponse(content="Current answer."),),
+            LLMResponse(content="unused"),
+            block_summary=True,
+        )
+        compactor = SessionCompactor(
+            provider,
+            token_threshold=estimate_messages_tokens(current_turn) + 1,
+            recent_token_budget=estimate_messages_tokens(current_turn),
+        )
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+            session_compactor=compactor,
+        )
+        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
+        await asyncio.wait_for(provider.summary_started.wait(), timeout=1)
+
+        self.assertTrue(await loop.delete_session("session-1"))
+
+        self.assertTrue(provider.summary_finished.is_set())
+        self.assertIsNone(self._sessions.get("session-1"))
+        self.assertFalse(loop._compaction_tasks)
+
+    async def test_deleted_session_ignores_stale_background_messages_until_user_reopens_it(self) -> None:
+        self._sessions.save(self._sessions.get_or_create("session-1"))
+        provider = ScriptedProvider((LLMResponse(content="Reopened."),))
+        loop = AgentLoop(
+            AgentRunner(),
+            provider,
+            ToolRegistry(),
+            self._sessions,
+            _context_builder(self._temporary_directory.name),
+        )
+        self.assertTrue(await loop.delete_session("session-1"))
+
+        help_result = await _dispatch(
+            loop,
+            "/help",
+            "test",
+            "chat-1",
+            "session-1",
+        )
+        self.assertIn("/help", help_result.content)
+        self.assertIsNone(self._sessions.get("session-1"))
+
+        stale_result = await loop.process_inbound(
+            InboundMessage(
+                channel="test",
+                chat_id="chat-1",
+                sender_id="cron",
+                session_id="session-1",
+                content="Stale result.",
+                metadata={"source": "cron"},
+            )
+        )
+
+        self.assertIsNone(stale_result)
+        self.assertIsNone(self._sessions.get("session-1"))
+        reopened = await _dispatch(
+            loop,
+            "New user message.",
+            "test",
+            "chat-1",
+            "session-1",
+        )
+        self.assertEqual(reopened.content, "Reopened.")
+        self.assertIsNotNone(self._sessions.get("session-1"))
 
     async def test_continuous_messages_use_the_session_id_without_persisting_the_system_prompt(self) -> None:
         provider = ScriptedProvider(

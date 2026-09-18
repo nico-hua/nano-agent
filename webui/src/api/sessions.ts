@@ -61,14 +61,37 @@ export function createSessionId(
   return `webui-${createUuid()}`;
 }
 
+/** Permanently delete one persisted session after backend-owned work is stopped. */
+export async function deleteSession(
+  apiBaseUrl: string,
+  sessionId: string,
+  authToken?: string,
+): Promise<void> {
+  const payload = await requestJson(
+    apiBaseUrl,
+    `/v1/sessions/${encodeURIComponent(sessionId)}`,
+    authToken,
+    "DELETE",
+  );
+  if (
+    !isRecord(payload) ||
+    payload.session_id !== sessionId ||
+    payload.deleted !== true
+  ) {
+    throw invalidResponse();
+  }
+}
+
 async function requestJson(
   apiBaseUrl: string,
   path: string,
   authToken?: string,
+  method = "GET",
 ): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(`${apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      method,
       headers: authorizationHeader(authToken),
     });
   } catch {

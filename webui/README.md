@@ -3,7 +3,7 @@
 This directory is an independent React + TypeScript + Vite frontend for the
 Nano Agent project. It connects to the existing WebSocket Channel for normal and
 streaming assistant responses, including tool-call progress, and uses the local
-HTTP API to list and load persisted sessions.
+HTTP API to list, load, and delete persisted sessions.
 
 For a code-oriented explanation of the current React components, state, protocol
 and data flow, see [Web UI React 代码导读](../docs/WEBUI_REACT_GUIDE.md).
@@ -40,6 +40,15 @@ assistant message in those turns visible. Assistant tool calls are shown with
 the historical response, while tool results remain internal. **New session**
 creates a browser-side unique ID and clears only the current UI; it is persisted
 by Nano Agent after the first message is sent.
+
+Each saved session has a separate **Delete** action. The confirmation dialog
+warns that deletion cannot be recovered. After confirmation, the backend first
+removes session-owned Cron tasks and cancels and awaits active Agent/Goal turns,
+background Subagents, and session compaction before deleting the JSONL file.
+Stale internal messages are ignored so they cannot recreate the deleted
+session. Long-term memory is intentionally retained. On success, the UI always
+switches to a new blank browser session; on failure, it keeps the current
+session and dialog open with the error.
 
 ## Streaming events
 
@@ -93,7 +102,7 @@ npm test
 
 This runs Node's built-in test runner against WebSocket and session UI state,
 covering connection status, client message shape, tool-call and delta
-accumulation, turn completion, session API parsing, session switching, and
+accumulation, turn completion, session API parsing and deletion, session switching, and
 error handling. No browser-test dependency is required.
 
 If npm reports an internal npm `edgesOut` error after dependencies change,

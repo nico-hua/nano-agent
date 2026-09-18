@@ -13,6 +13,7 @@
   },
   "include": [
     "src/components/MessageContent.tsx",
+    "src/components/SessionDeleteButton.tsx",
     "src/commands.ts",
     "src/conversationScroll.ts",
     "src/hooks/chatState.ts",

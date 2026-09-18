@@ -45,6 +45,7 @@ AgentLoopFactory = Callable[
         MemoryConsolidator,
         MessageBus,
         SubagentManager,
+        CronService,
     ],
     AgentLoop,
 ]
@@ -149,6 +150,7 @@ class Application:
             self._memory_consolidator,
             self._message_bus,
             self._subagent_manager,
+            self._cron_service,
         )
         self._api_service = api_service_factory(
             self._agent_loop,
@@ -400,6 +402,7 @@ def _create_agent_loop(
     memory_consolidator: MemoryConsolidator,
     message_bus: MessageBus,
     subagent_manager: SubagentManager,
+    cron_service: CronService,
 ) -> AgentLoop:
     return AgentLoop(
         runner,
@@ -412,4 +415,5 @@ def _create_agent_loop(
         memory_store=memory_store,
         memory_consolidator=memory_consolidator,
         subagent_manager=subagent_manager,
+        cron_service=cron_service,
     )

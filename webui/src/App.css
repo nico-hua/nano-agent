@@ -150,6 +150,13 @@
   list-style: none;
 }
 
+.session-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.25rem;
+  align-items: stretch;
+}
+
 .session-item {
   display: grid;
   width: 100%;
@@ -199,6 +206,120 @@
 .session-item__meta {
   color: #718178;
   font-size: 0.66rem;
+}
+
+.session-delete {
+  display: grid;
+  width: 1.85rem;
+  height: 1.85rem;
+  align-self: center;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 0.5rem;
+  color: #b33b2e;
+  background: transparent;
+  cursor: pointer;
+}
+
+.session-delete svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.session-delete:hover,
+.session-delete:focus-visible {
+  border-color: #d98d82;
+  color: #982c20;
+  background: #fff1ee;
+  outline: 2px solid rgba(179, 59, 46, 0.2);
+  outline-offset: 1px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 10;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(23, 35, 30, 0.48);
+}
+
+.confirmation-modal {
+  width: min(100%, 28rem);
+  padding: 1.1rem;
+  border: 1px solid #d6e0d9;
+  border-radius: 0.9rem;
+  background: #ffffff;
+  box-shadow: 0 1.5rem 4rem rgba(23, 35, 30, 0.25);
+}
+
+.confirmation-modal h2,
+.confirmation-modal p {
+  margin: 0;
+}
+
+.confirmation-modal h2 {
+  color: #28382f;
+  font-size: 1.05rem;
+}
+
+.confirmation-modal > p {
+  margin-top: 0.65rem;
+  color: #52635b;
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+
+.confirmation-modal .confirmation-modal__session {
+  overflow: hidden;
+  padding: 0.5rem;
+  border-radius: 0.45rem;
+  color: #33463b;
+  background: #f2f8f4;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.confirmation-modal .confirmation-modal__error {
+  color: #8d2b1d;
+  background: #fff1ee;
+}
+
+.confirmation-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.confirmation-modal__actions button {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #bdcbc2;
+  border-radius: 0.55rem;
+  color: #33463b;
+  background: #ffffff;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.confirmation-modal__actions button:focus-visible {
+  outline: 3px solid rgba(13, 107, 91, 0.2);
+}
+
+.confirmation-modal__actions .confirmation-modal__delete {
+  border-color: #9c2f20;
+  color: #ffffff;
+  background: #9c2f20;
+}
+
+.confirmation-modal__actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .chat-panel {

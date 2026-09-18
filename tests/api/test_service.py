@@ -93,8 +93,10 @@ class BlockingProvider(EchoProvider):
 class RecordingLoop:
     """A small AgentLoop double used to verify HTTP message conversion."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, delete_result: bool = True) -> None:
         self.received: list[InboundMessage] = []
+        self.deleted_sessions: list[str] = []
+        self.delete_result = delete_result
 
     async def process_inbound(self, inbound: InboundMessage) -> OutboundMessage:
         self.received.append(inbound)
@@ -105,6 +107,10 @@ class RecordingLoop:
             session_id=inbound.session_id,
             content="Recorded response",
         )
+
+    async def delete_session(self, session_key: str) -> bool:
+        self.deleted_sessions.append(session_key)
+        return self.delete_result
 
 
 class HttpApiServiceTest(unittest.IsolatedAsyncioTestCase):
@@ -530,6 +536,73 @@ class HttpApiServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 404)
         self.assertEqual(payload["error"]["code"], "session_not_found")
 
+    async def test_delete_session_delegates_cleanup_to_agent_loop(self) -> None:
+        loop = RecordingLoop()
+        service = await self._start_service(loop)
+
+        status, payload = await _http_request(
+            service,
+            "DELETE",
+            "/v1/sessions/session-to-delete",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload,
+            {"session_id": "session-to-delete", "deleted": True},
+        )
+        self.assertEqual(loop.deleted_sessions, ["session-to-delete"])
+
+    async def test_delete_missing_session_returns_a_clear_error(self) -> None:
+        loop = RecordingLoop(delete_result=False)
+        service = await self._start_service(loop)
+
+        status, payload = await _http_request(
+            service,
+            "DELETE",
+            "/v1/sessions/missing-session",
+        )
+
+        self.assertEqual(status, 404)
+        self.assertEqual(payload["error"]["code"], "session_not_found")
+
+    async def test_delete_endpoint_removes_the_persisted_session(self) -> None:
+        sessions = SessionManager(Path(self._temporary_directory.name) / "workspace")
+        sessions.save(
+            sessions.get_or_create("session-to-delete").with_messages(
+                (HumanMessage(content="Delete me."),)
+            )
+        )
+        loop = _agent_loop(EchoProvider(), sessions, self._temporary_directory.name)
+        service = await self._start_service(loop, sessions)
+
+        status, payload = await _http_request(
+            service,
+            "DELETE",
+            "/v1/sessions/session-to-delete",
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["deleted"])
+        self.assertIsNone(sessions.get("session-to-delete"))
+
+    async def test_delete_session_requires_authentication_when_enabled(self) -> None:
+        loop = RecordingLoop()
+        service = await self._start_service(
+            loop,
+            auth=AuthConfig(enabled=True, token="delete-token"),
+        )
+
+        status, payload = await _http_request(
+            service,
+            "DELETE",
+            "/v1/sessions/session-to-delete",
+        )
+
+        self.assertEqual(status, 401)
+        self.assertEqual(payload["error"]["code"], "unauthorized")
+        self.assertEqual(loop.deleted_sessions, [])
+
     async def test_local_browser_origin_can_read_session_data(self) -> None:
         service = await self._start_service(RecordingLoop())
         port = service.port
@@ -559,6 +632,10 @@ class HttpApiServiceTest(unittest.IsolatedAsyncioTestCase):
                 self.assertIn(
                     "Authorization",
                     response.headers["Access-Control-Allow-Headers"],
+                )
+                self.assertIn(
+                    "DELETE",
+                    response.headers["Access-Control-Allow-Methods"],
                 )
 
     async def test_router_returns_a_json_error_for_an_unsupported_method(self) -> None:

@@ -301,16 +301,19 @@ Vite 加载 `index.html`，其中的 `<script type="module" src="/src/main.tsx">
 
 网页卸载时 Hook 调用 `close()`，这会清理计时器并禁止继续自动重连。手动点击 **Reconnect** 时，旧 socket 被失效，再创建一个新连接。这个模块不修改 React State；它通过回调通知 Hook。
 
-### `api/sessions.ts`：只读 HTTP 会话客户端
+### `api/sessions.ts`：HTTP 会话客户端
 
 页面经它访问：
 
 - `GET /v1/sessions`：`fetchSessionSummaries()` 返回侧栏摘要。
 - `GET /v1/sessions/{session_id}`：`fetchSessionHistory()` 返回当前会话的可见 user/assistant 历史与 assistant tool call。
+- `DELETE /v1/sessions/{session_id}`：`deleteSession()` 请求后端停止该会话的关联任务并永久删除 JSONL。
 
 该模块负责：拼接 API URL、在 token 存在时添加 `Authorization: Bearer ...`、解析 JSON、将网络/格式错误转换为 `SessionApiError`。它不调用 WebSocket，也不修改 React State。
 
 `createSessionId()` 使用 `crypto.randomUUID()` 生成 `webui-` 前缀 ID。创建新会话只改变浏览器状态；首次正常消息完成后由后端 SessionManager 持久化。
+
+侧栏的选择按钮与删除按钮是同级控件，避免嵌套交互元素。删除按钮打开带 `role="dialog"` 和 `aria-modal="true"` 的确认弹窗；请求期间两个操作按钮均禁用。删除失败时保留原会话和弹窗并展示错误；成功时使旧历史请求失效、清空消息、刷新摘要，并通过 `createSessionId()` 进入新的空白浏览器会话。
 
 ### 展示组件与辅助模块
 
@@ -341,6 +344,19 @@ index.html
 ```
 
 新生成的浏览器 Session 尚未落盘时，历史接口返回 404；`App` 将其视为一个空白会话，而不是错误。
+
+### 删除持久化会话
+
+```text
+点击侧栏 Delete
+  -> 显示不可恢复确认弹窗
+  -> DELETE /v1/sessions/{id}
+  -> 后端停止 session 关联任务并删除 JSONL
+  -> App 清空消息并生成新的 browser sessionId
+  -> 刷新 GET /v1/sessions
+```
+
+长期记忆不属于单个 Session JSONL 的删除范围。若 DELETE 失败，App 不切换 session，也不关闭弹窗，用户可以重试或取消。
 
 ### 认证与连接状态
 
@@ -420,8 +436,8 @@ npm run build
 
 - Web UI 不直接读取 workspace 下的 Session JSONL，也不调用 Provider 或 AgentLoop。
 - 前端只通过 WebSocket 发送普通 `message`、认证事件和复用 `/stop` 的停止请求；命令业务仍由后端 `CommandRouter` 处理。
-- Session 列表和历史只通过只读 HTTP API 获取。
+- Session 列表和历史通过 GET API 获取；删除只通过带确认的 DELETE API 发起。
 - WebSocket Hook 不直接渲染页面，`MessageContent` 不直接发请求，`chatState.ts` 不直接访问浏览器网络或 DOM。
-- 当前没有路由、多用户、会话删除/重命名、流式断点续传或跨设备同步。
+- 当前没有路由、多用户、会话重命名、流式断点续传或跨设备同步。
 
 保持这些边界，能让后端开发者从协议、状态和展示三层独立审查前端变更。

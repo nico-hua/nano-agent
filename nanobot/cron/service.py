@@ -219,6 +219,26 @@ class CronService:
         self._wakeup.set()
         return True
 
+    def remove_session_tasks(self, session_key: str) -> int:
+        """Remove every task owned by one session and return the count."""
+
+        _validate_task_text(session_key, "session_key")
+        if not session_key.strip():
+            raise ValueError("Cron task session_key must be a non-empty string")
+        self._ensure_loaded()
+        tasks = {
+            task_id: task
+            for task_id, task in self._tasks.items()
+            if task.payload.session_key != session_key
+        }
+        removed_count = len(self._tasks) - len(tasks)
+        if removed_count == 0:
+            return 0
+        self._save_tasks(tasks)
+        self._tasks = tasks
+        self._wakeup.set()
+        return removed_count
+
     async def start(self) -> None:
         """Start the one background scheduler task without blocking on it."""
 

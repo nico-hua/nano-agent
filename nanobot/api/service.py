@@ -65,6 +65,10 @@ class HttpApiService:
         self._app.router.add_post("/v1/messages", self._post_message)
         self._app.router.add_get("/v1/sessions", self._list_sessions)
         self._app.router.add_get("/v1/sessions/{session_id}", self._get_session)
+        self._app.router.add_delete(
+            "/v1/sessions/{session_id}",
+            self._delete_session,
+        )
         self._runner: web.AppRunner | None = None
         self._started = False
 
@@ -215,6 +219,36 @@ class HttpApiService:
             }
         )
 
+    async def _delete_session(self, request: web.Request) -> web.Response:
+        """Stop session-owned work and permanently remove its saved history."""
+
+        session_id = request.match_info["session_id"]
+        delete_session = getattr(self._agent_loop, "delete_session", None)
+        if not callable(delete_session):
+            return _error_response(
+                503,
+                "agent_unavailable",
+                "AgentLoop is unavailable",
+            )
+        try:
+            deleted = await delete_session(session_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("AgentLoop failed while deleting a session")
+            return _error_response(
+                500,
+                "session_delete_failed",
+                "Session could not be deleted",
+            )
+        if not deleted:
+            return _error_response(
+                404,
+                "session_not_found",
+                "Session was not found",
+            )
+        return _json_response({"session_id": session_id, "deleted": True})
+
     async def _process_inbound(self, inbound: InboundMessage) -> web.Response:
         process_inbound = getattr(self._agent_loop, "process_inbound", None)
         if not callable(process_inbound):
@@ -292,7 +326,7 @@ async def _cors_middleware(
         response.headers["Access-Control-Allow-Origin"] = origin
         response.headers["Vary"] = "Origin"
         response.headers["Access-Control-Allow-Headers"] = "Authorization, Content-Type"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
     return response
 
 

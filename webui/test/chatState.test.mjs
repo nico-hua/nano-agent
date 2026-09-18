@@ -31,13 +31,28 @@ import {
 } from "../.test-build/types/protocol.js";
 import {
   createSessionId,
+  deleteSession,
   fetchSessionHistory,
   fetchSessionSummaries,
   SessionApiError,
 } from "../.test-build/api/sessions.js";
 import { getSlashCommandSuggestions } from "../.test-build/commands.js";
 import { MessageContent } from "../.test-build/components/MessageContent.js";
+import { SessionDeleteButton } from "../.test-build/components/SessionDeleteButton.js";
 import { isNearConversationBottom } from "../.test-build/conversationScroll.js";
+
+test("the session delete control renders an accessible trash icon", () => {
+  const markup = renderToStaticMarkup(
+    createElement(SessionDeleteButton, {
+      sessionId: "session-one",
+      onDelete: () => {},
+    }),
+  );
+
+  assert.match(markup, /aria-label="Delete session session-one"/);
+  assert.match(markup, /<svg[^>]*aria-hidden="true"/);
+  assert.doesNotMatch(markup, />Delete<\/button>/);
+});
 
 test("slash command suggestions list, filter, and preserve argument placeholders", () => {
   assert.deepEqual(
@@ -552,6 +567,37 @@ test("the session API loads summaries and a selected transcript", async () => {
 test("new sessions use a unique browser-owned identifier and do not require persistence", () => {
   assert.equal(createSessionId(() => "first"), "webui-first");
   assert.equal(createSessionId(() => "second"), "webui-second");
+});
+
+test("the session API deletes an encoded session with authorization", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (url, options) => {
+    request = {
+      url: String(url),
+      method: options?.method,
+      authorization: new Headers(options?.headers).get("Authorization"),
+    };
+    return new Response(
+      JSON.stringify({ session_id: "session two", deleted: true }),
+      { status: 200 },
+    );
+  };
+
+  try {
+    await deleteSession(
+      "http://127.0.0.1:8000/",
+      "session two",
+      "browser-token",
+    );
+    assert.deepEqual(request, {
+      url: "http://127.0.0.1:8000/v1/sessions/session%20two",
+      method: "DELETE",
+      authorization: "Bearer browser-token",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("session API failures retain a clear status and error message", async () => {

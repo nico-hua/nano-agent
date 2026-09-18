@@ -26,6 +26,7 @@ from .context import ContextBuilder, ContextWindowExceededError
 from .runner import AgentRunner, AgentRunResult, AgentRunSpec
 
 if TYPE_CHECKING:
+    from ..cron import CronService
     from ..subagent import SubagentManager
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,7 @@ class AgentLoop:
         memory_consolidator: MemoryConsolidator | None = None,
         command_router: CommandRouter | None = None,
         subagent_manager: SubagentManager | None = None,
+        cron_service: CronService | None = None,
         max_iterations: int = 30,
         max_goal_continuations: int = DEFAULT_MAX_GOAL_CONTINUATIONS,
     ) -> None:
@@ -128,6 +130,7 @@ class AgentLoop:
             else None
         )
         self._subagent_manager = subagent_manager
+        self._cron_service = cron_service
         self._max_iterations = max_iterations
         self._max_goal_continuations = max_goal_continuations
         self._command_router = command_router or CommandRouter(
@@ -152,6 +155,9 @@ class AgentLoop:
         self._pending_user_messages: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._inbound_tasks: set[asyncio.Task[None]] = set()
         self._compaction_tasks: set[asyncio.Task[None]] = set()
+        self._compaction_sessions: dict[asyncio.Task[None], str] = {}
+        self._deleting_sessions: set[str] = set()
+        self._deleted_sessions: set[str] = set()
         self._closed = False
 
     async def run(self) -> None:
@@ -187,6 +193,8 @@ class AgentLoop:
                         session=None,
                         operation="/stop",
                     )
+                    continue
+                if self._ignore_message_for_deleted_session(inbound, session_key):
                     continue
                 if self._is_goal_mode_message(
                     inbound,
@@ -234,6 +242,8 @@ class AgentLoop:
         )
         if self._command_router.is_stop_command(invocation):
             return await self._run_stop_command(inbound, invocation)
+        if self._ignore_message_for_deleted_session(inbound, session_key):
+            return None
         if self._is_goal_mode_message(inbound, invocation, session_key):
             return await self._process_direct_goal_mode_message(
                 inbound,
@@ -241,6 +251,63 @@ class AgentLoop:
                 session_key,
             )
         return await self._dispatch_non_stop_message(inbound, invocation)
+
+    async def delete_session(self, session_key: str) -> bool:
+        """Stop work owned by one persisted session, then delete its history."""
+
+        if self._session_manager.get(session_key) is None:
+            return False
+        if session_key in self._deleting_sessions:
+            return False
+
+        self._deleting_sessions.add(session_key)
+        try:
+            if self._cron_service is not None:
+                self._cron_service.remove_session_tasks(session_key)
+
+            current_task = asyncio.current_task()
+            turn_tasks = tuple(
+                task
+                for task in self._active_turn_tasks.get(session_key, ())
+                if not task.done() and task is not current_task
+            )
+            goal_task = self._goal_turn_tasks.get(session_key)
+            await self._cancel_active_turn(session_key)
+            self._cancel_goal_turn(session_key)
+            if self._subagent_manager is not None:
+                await self._subagent_manager.cancel_session(session_key)
+
+            compaction_tasks = tuple(
+                task
+                for task, owner in self._compaction_sessions.items()
+                if owner == session_key and not task.done() and task is not current_task
+            )
+            for task in compaction_tasks:
+                task.cancel()
+
+            tasks_to_await = set(turn_tasks)
+            if (
+                goal_task is not None
+                and not goal_task.done()
+                and goal_task is not current_task
+            ):
+                tasks_to_await.add(goal_task)
+            tasks_to_await.update(compaction_tasks)
+            if tasks_to_await:
+                await asyncio.gather(*tasks_to_await, return_exceptions=True)
+            if self._subagent_manager is not None and (turn_tasks or goal_task):
+                # A turn can enter SpawnTool just before its cancellation is
+                # delivered. Sweep once more after the parent turn has exited.
+                await self._subagent_manager.cancel_session(session_key)
+
+            async with self._lock_for(session_key):
+                deleted = self._session_manager.delete(session_key)
+                if deleted:
+                    self._deleted_sessions.add(session_key)
+                return deleted
+        finally:
+            self._pending_user_messages.pop(session_key, None)
+            self._deleting_sessions.discard(session_key)
 
     async def close(self) -> None:
         """Cancel and await all tracked background session tasks."""
@@ -269,6 +336,9 @@ class AgentLoop:
         self._streaming_turns.clear()
         self._goal_turn_tasks.clear()
         self._pending_user_messages.clear()
+        self._compaction_sessions.clear()
+        self._deleting_sessions.clear()
+        self._deleted_sessions.clear()
 
     async def wait_for_compactions(self) -> None:
         """Wait until currently scheduled background compactions have completed."""
@@ -394,13 +464,31 @@ class AgentLoop:
             inbound.chat_id,
             inbound.session_id,
         )
+        if self._ignore_message_for_deleted_session(inbound, session_key):
+            return None
         if invocation is None:
             return await self._run_turn(inbound, session_key)
 
         # 队列中的命令都不是 /stop；它们会读取或修改 Session，必须与普通 turn 串行化。
         async with self._lock_for(session_key):
             session = self._session_manager.get_or_create(session_key)
-            return await self._route_command(inbound, invocation, session)
+            response = await self._route_command(inbound, invocation, session)
+            if self._session_manager.get(session_key) is not None:
+                self._deleted_sessions.discard(session_key)
+            return response
+
+    def _ignore_message_for_deleted_session(
+        self,
+        inbound: InboundMessage,
+        session_key: str,
+    ) -> bool:
+        """Drop stale internal work until new user activity is persisted."""
+
+        if session_key in self._deleting_sessions:
+            return True
+        if session_key not in self._deleted_sessions:
+            return False
+        return inbound.metadata.get("source") in {"cron", "subagent", "goal"}
 
     # -- Normal Agent turn ------------------------------------------------
 
@@ -638,6 +726,7 @@ class AgentLoop:
             session = self._finish_active_goal_state(session, status)
 
         saved_session = self._session_manager.save(session)
+        self._deleted_sessions.discard(session_key)
         if self._memory_events is not None:
             self._memory_events.append(
                 session_key,
@@ -648,15 +737,26 @@ class AgentLoop:
         return saved_session
 
     def _schedule_compaction(self, session_key: str) -> None:
-        if self._session_compactor is None or self._closed:
+        if (
+            self._session_compactor is None
+            or self._closed
+            or session_key in self._deleting_sessions
+        ):
             return
         task = asyncio.create_task(self._compact_session(session_key))
         self._compaction_tasks.add(task)
-        task.add_done_callback(self._compaction_tasks.discard)
+        self._compaction_sessions[task] = session_key
+        task.add_done_callback(self._compaction_task_finished)
+
+    def _compaction_task_finished(self, task: asyncio.Task[None]) -> None:
+        self._compaction_tasks.discard(task)
+        self._compaction_sessions.pop(task, None)
 
     async def _compact_session(self, session_key: str) -> None:
         try:
             async with self._lock_for(session_key):
+                if session_key in self._deleting_sessions:
+                    return
                 session = self._session_manager.get_or_create(session_key)
                 compacted_session = await self._session_compactor.compact(session)
                 if compacted_session is not session:

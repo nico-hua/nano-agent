@@ -407,6 +407,7 @@ HttpApiService 当前提供：
 - POST /v1/messages：同步发送消息并得到最终文本。
 - GET /v1/sessions：只读会话摘要列表；消息数量和预览只统计 is_visible=true 的记录。
 - GET /v1/sessions/{session_id}：返回带 is_visible 标记的 user/assistant 历史，包括隐藏记录；assistant tool call 随所属 assistant 返回，tool result 不暴露。
+- DELETE /v1/sessions/{session_id}：由 AgentLoop 先移除关联 Cron，取消并等待 Agent/Goal turn、Subagent 与压缩任务，再在 session lock 内删除 JSONL；父 turn 退出后会再次清扫可能竞态创建的 Subagent。已排队的 cron/subagent/goal 旧消息会被丢弃，普通用户消息仍可重新使用同一 key。长期记忆与记忆事件历史不随 Session 删除。
 
 认证开启时，除 /health 外的 HTTP 路由使用 Authorization: Bearer token。这是本地静态 token 认证，不是用户体系、角色权限或多租户授权。
 
@@ -425,7 +426,7 @@ main.tsx
       -> MessageContent：用户纯文本；assistant 安全 Markdown 与工具详情
 ~~~
 
-App 负责页面级 session 选择、历史加载、输入和滚动；useNanobotWebSocket 只处理连接、发送、接收和认证；chatState 保留历史接口返回的全部消息及其 isVisible 标记，渲染前再过滤隐藏记录；sessions.ts 只负责 HTTP Session 请求，并将旧响应中缺失的 is_visible 兼容为 true。重连成功后，前端重新读取当前 Session 的已持久化历史，并丢弃未确认 delta，避免把中断片段误当成持久化对话。
+App 负责页面级 session 选择、历史加载、删除确认、输入和滚动；useNanobotWebSocket 只处理连接、发送、接收和认证；chatState 保留历史接口返回的全部消息及其 isVisible 标记，渲染前再过滤隐藏记录；sessions.ts 负责 HTTP Session 读取与删除请求，并将旧响应中缺失的 is_visible 兼容为 true。删除成功后 App 清空消息并切换到新的空白浏览器会话，失败时保留原会话和确认弹窗。重连成功后，前端重新读取当前 Session 的已持久化历史，并丢弃未确认 delta，避免把中断片段误当成持久化对话。
 
 前后端分离的好处是 Python Agent 服务可独立运行，Web UI 也能独立构建和迭代；二者只需维护明确的 HTTP 与 WebSocket 协议。
 
@@ -531,7 +532,7 @@ HTTP API
 - QQ Channel、静态认证和流式协议的 WebSocket Channel、本地 HTTP API。
 - 独立 React Web UI：会话列表、Markdown、工具调用展示、停止、认证、有限重连和斜杠命令提示。
 
-最新完整离线 Python 测试为 **541 passed, 10 skipped**；前端构建和测试命令见 **webui/README.md**。
+最新完整离线 Python 测试为 **558 passed, 10 skipped**；前端测试为 **32 passed**，生产构建通过；命令见 **webui/README.md**。
 
 ### 暂时跳过的功能
 

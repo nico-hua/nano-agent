@@ -62,6 +62,26 @@ class BlockingRunner(AgentRunner):
         return self._result
 
 
+class MultiTaskBlockingRunner(AgentRunner):
+    def __init__(self) -> None:
+        self.all_started = asyncio.Event()
+        self.cancellation_started = asyncio.Event()
+        self.cancellation_release = asyncio.Event()
+        self._started_count = 0
+
+    async def run(self, spec: object) -> AgentRunResult:
+        del spec
+        self._started_count += 1
+        if self._started_count == 2:
+            self.all_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancellation_started.set()
+            await self.cancellation_release.wait()
+            raise
+
+
 class FailingRunner(AgentRunner):
     async def run(self, spec: object) -> AgentRunResult:
         del spec
@@ -156,6 +176,33 @@ class SubagentLifecycleTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(runner.cancelled.is_set())
         self.assertEqual(manager.get_task(first_id).status, "cancelled")
         self.assertEqual(manager.running_tasks, ())
+
+    async def test_cancel_session_awaits_only_matching_background_tasks(self) -> None:
+        runner = MultiTaskBlockingRunner()
+        manager = self._manager(runner)
+        session_a_id = manager.start_background(
+            "Session A task.",
+            request_context=_context("session-a"),
+        )
+        session_b_id = manager.start_background(
+            "Session B task.",
+            request_context=_context("session-b"),
+        )
+        await asyncio.wait_for(runner.all_started.wait(), timeout=1)
+
+        cancellation = asyncio.create_task(manager.cancel_session("session-a"))
+        await asyncio.wait_for(runner.cancellation_started.wait(), timeout=1)
+        self.assertFalse(cancellation.done())
+        runner.cancellation_release.set()
+
+        self.assertEqual(await asyncio.wait_for(cancellation, timeout=1), 1)
+        self.assertEqual(manager.get_task(session_a_id).status, "cancelled")
+        self.assertEqual(manager.get_task(session_b_id).status, "running")
+        self.assertEqual(
+            tuple(task.task_id for task in manager.running_tasks),
+            (session_b_id,),
+        )
+        await manager.close()
 
     async def test_subagent_commands_are_session_scoped_and_do_not_cancel_final_tasks(self) -> None:
         runner = BlockingRunner()
@@ -265,9 +312,9 @@ async def _route(
     return reply.content
 
 
-def _context() -> RequestContext:
+def _context(session_key: str = "session-a") -> RequestContext:
     return RequestContext(
-        session_key="session-a",
+        session_key=session_key,
         channel="test",
         chat_id="chat-1",
         sender_id="sender-1",
