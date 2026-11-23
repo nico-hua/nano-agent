@@ -348,8 +348,7 @@ class AgentLoopCommandTest(unittest.IsolatedAsyncioTestCase):
             (HumanMessage(content="Earlier question."), AIMessage(content="Earlier answer."))
         ).with_summary("Earlier summary.", 2).with_goal_state(
             GoalState.create("A completed objective.").finish("completed")
-        ).with_request_state(
-            "Cached system prompt.",
+        ).with_last_request_at(
             datetime(2026, 9, 18, 8, 30, tzinfo=timezone.utc),
         )
         self._sessions.save(previous)
@@ -364,7 +363,6 @@ class AgentLoopCommandTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(recovered.summary)
         self.assertEqual(recovered.summary_until, 0)
         self.assertIsNone(recovered.goal_state)
-        self.assertIsNone(recovered.system_prompt)
         self.assertIsNone(recovered.last_request_at)
         self.assertEqual(provider.complete_calls, [])
 

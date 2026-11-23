@@ -175,7 +175,6 @@ def _session_from_records(path: Path, records: list[dict[str, Any]]) -> Session:
         key=_required_text(header, "key"),
         created_at=_timestamp_from_record(header, "created_at"),
         updated_at=_timestamp_from_record(header, "updated_at"),
-        system_prompt=_optional_system_prompt(header),
         last_request_at=_optional_timestamp_from_record(header, "last_request_at"),
         messages=tuple(_message_from_record(record) for record in records[1:]),
         summary=_optional_summary(header),
@@ -191,7 +190,6 @@ def _serialize_session(session: Session) -> str:
             "key": session.key,
             "created_at": session.created_at.isoformat(),
             "updated_at": session.updated_at.isoformat(),
-            "system_prompt": session.system_prompt,
             "last_request_at": (
                 session.last_request_at.isoformat()
                 if session.last_request_at is not None
@@ -316,17 +314,6 @@ def _optional_summary(record: Mapping[str, Any]) -> str | None:
         raise TypeError("Session record summary must be a string or null")
     if not value.strip():
         raise ValueError("Session record summary must not be blank")
-    return value
-
-
-def _optional_system_prompt(record: Mapping[str, Any]) -> str | None:
-    value = record.get("system_prompt")
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise TypeError("Session record system_prompt must be a string or null")
-    if not value.strip():
-        raise ValueError("Session record system_prompt must not be blank")
     return value
 
 

@@ -121,13 +121,13 @@ class MemoryConsolidator:
             logger.exception("Long-term memory consolidation request failed")
             return MemoryConsolidationOutcome.FAILED
 
+        if response.error is not None or response.tool_calls:
+            logger.warning("Long-term memory consolidation returned an invalid response")
+            return MemoryConsolidationOutcome.FAILED
         content = (response.content or "").strip()
         if not content:
             logger.debug("Long-term memory consolidation found no durable information")
             return MemoryConsolidationOutcome.SKIPPED
-        if response.tool_calls:
-            logger.warning("Long-term memory consolidation returned no usable content")
-            return MemoryConsolidationOutcome.FAILED
 
         try:
             self._memory_store.write(content)

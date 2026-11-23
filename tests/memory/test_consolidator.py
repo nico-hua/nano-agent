@@ -193,6 +193,29 @@ class MemoryConsolidatorTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self._store.read_cursor(), event.event_id)
         self.assertEqual(self._store.read(), "")
 
+    async def test_invalid_responses_leave_the_event_pending_until_a_successful_retry(self) -> None:
+        call = ToolCallRequest(id="call-1", name="unexpected", arguments={})
+        provider = ConsolidationProvider((
+            LLMResponse(error="Unavailable"),
+            LLMResponse(tool_calls=(call,)),
+            LLMResponse(content="Updated memory."),
+        ))
+        consumer = MemoryEventConsumer(self._store, MemoryConsolidator(provider, self._store))
+        self._store.write("Existing memory.")
+        event = self._store.append_event("session-1", _completed_messages())
+
+        for reason in ("provider error", "unexpected tool call"):
+            with self.subTest(reason=reason):
+                consumer.wake()
+                await consumer.wait()
+                self.assertEqual(self._store.read_cursor(), 0)
+                self.assertEqual(self._store.read(), "Existing memory.")
+
+        consumer.wake()
+        await consumer.wait()
+        self.assertEqual(self._store.read_cursor(), event.event_id)
+        self.assertEqual(self._store.read(), "Updated memory.")
+
     async def test_pending_events_are_consolidated_as_one_batch(self) -> None:
         provider = ConsolidationProvider((LLMResponse(content="Updated memory."),))
         consumer = MemoryEventConsumer(

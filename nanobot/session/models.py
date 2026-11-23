@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from ..providers import BaseMessage
 from .goals import GoalState
@@ -21,18 +21,12 @@ class Session:
     summary: str | None = None
     summary_until: int = 0
     goal_state: GoalState | None = None
-    system_prompt: str | None = None
     last_request_at: datetime | None = None
 
     def __post_init__(self) -> None:
         _validate_session_key(self.key)
         _validate_timestamp("created_at", self.created_at)
         _validate_timestamp("updated_at", self.updated_at)
-        if self.system_prompt is not None:
-            if not isinstance(self.system_prompt, str):
-                raise TypeError("system_prompt must be a string or None")
-            if not self.system_prompt.strip():
-                raise ValueError("system_prompt must not be blank")
         if self.last_request_at is not None:
             _validate_timestamp("last_request_at", self.last_request_at)
         if not isinstance(self.messages, Sequence) or not all(
@@ -58,7 +52,7 @@ class Session:
     def create(cls, key: str) -> Session:
         """Create a new empty session using the current UTC time."""
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return cls(key=key, created_at=now, updated_at=now)
 
     def with_messages(self, messages: Sequence[BaseMessage]) -> Session:
@@ -71,18 +65,10 @@ class Session:
 
         return replace(self, updated_at=updated_at)
 
-    def with_request_state(
-        self,
-        system_prompt: str,
-        last_request_at: datetime,
-    ) -> Session:
-        """Return a session with the prompt and time used by its latest request."""
+    def with_last_request_at(self, last_request_at: datetime) -> Session:
+        """Record the time of the latest successfully completed request."""
 
-        return replace(
-            self,
-            system_prompt=system_prompt,
-            last_request_at=last_request_at,
-        )
+        return replace(self, last_request_at=last_request_at)
 
     def with_summary(self, summary: str, summary_until: int) -> Session:
         """Return a session with one summary and its covered message boundary."""
@@ -99,7 +85,6 @@ class Session:
 
         return replace(
             self,
-            system_prompt=None,
             last_request_at=None,
             messages=(),
             summary=None,

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..bus import InboundMessage, MessageBus, OutboundMessage
@@ -45,7 +45,6 @@ _GOAL_CONTINUATION_UNAVAILABLE_MESSAGE = (
     "该目标无法继续，并被标记为失败。"
 )
 DEFAULT_MAX_GOAL_CONTINUATIONS = 10
-_SYSTEM_PROMPT_CACHE_TTL = timedelta(minutes=30)
 _GOAL_INJECTION_TEMPLATE = """[New user input during goal execution]
 
 The user sent the following new input while the active goal is running:
@@ -522,11 +521,6 @@ class AgentLoop:
                 session = self._session_manager.get_or_create(session_key)
                 history = _without_system_messages(session.messages)
                 current_message = HumanMessage(content=inbound.content)
-                system_prompt = _system_prompt_for_request(
-                    session,
-                    self._context_builder,
-                    datetime.now(UTC),
-                )
                 blocked_tool_names = _blocked_tool_names(is_goal_turn)
                 available_tools = tuple(
                     tool
@@ -537,7 +531,6 @@ class AgentLoop:
                     request_messages = self._context_builder.build_request_messages(
                         history,
                         current_message,
-                        system_prompt=system_prompt,
                         summary=session.summary,
                         summary_until=session.summary_until,
                         tools=available_tools,
@@ -643,7 +636,6 @@ class AgentLoop:
                     history,
                     current_message,
                     completed_messages,
-                    system_prompt=system_prompt,
                     is_goal_turn=is_goal_turn,
                     hide_intermediate_messages=hide_intermediate_messages,
                     result=result,
@@ -709,7 +701,6 @@ class AgentLoop:
         current_message: HumanMessage,
         completed_messages: tuple[BaseMessage, ...],
         *,
-        system_prompt: str,
         is_goal_turn: bool,
         hide_intermediate_messages: bool,
         result: AgentRunResult,
@@ -727,7 +718,7 @@ class AgentLoop:
         session = (
             self._session_manager.get_or_create(session_key)
             .with_messages((*history, *turn_messages))
-            .with_request_state(system_prompt, datetime.now(UTC))
+            .with_last_request_at(datetime.now(UTC))
         )
         if is_goal_turn and result.stop_reason != "max_iterations":
             status: Literal["completed", "failed"] = (
@@ -1133,20 +1124,6 @@ def _messages_for_persistence(
 
 def _without_system_messages(messages: tuple[BaseMessage, ...]) -> tuple[BaseMessage, ...]:
     return tuple(message for message in messages if not isinstance(message, SystemMessage))
-
-
-def _system_prompt_for_request(
-    session: Session,
-    context_builder: ContextBuilder,
-    now: datetime,
-) -> str:
-    """Reuse a recent session prompt or build a fresh workspace prompt."""
-
-    if session.system_prompt is not None and session.last_request_at is not None:
-        age = now - session.last_request_at
-        if timedelta(0) <= age <= _SYSTEM_PROMPT_CACHE_TTL:
-            return session.system_prompt
-    return context_builder.build_system_prompt()
 
 
 def _is_goal_message(inbound: InboundMessage) -> bool:
