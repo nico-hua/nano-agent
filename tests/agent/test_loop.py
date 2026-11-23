@@ -517,7 +517,22 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.received_context.chat_id, "chat-1")
         self.assertEqual(tool.received_context.sender_id, "test-sender")
         self.assertEqual(tool.received_context.metadata, {"qq_chat_type": "c2c"})
+        self.assertEqual(tool.received_context.session_messages, (HumanMessage("Record my request context."),))
         self.assertIsNone(get_request_context())
+
+    async def test_internal_turns_provide_the_current_session_snapshot(self) -> None:
+        for source in ("cron", "subagent"):
+            with self.subTest(source=source):
+                tool = RequestContextTool()
+                provider = ScriptedProvider((
+                    LLMResponse(tool_calls=(ToolCallRequest("call", tool.name, {}),)),
+                    LLMResponse(content="Done."),
+                ))
+                loop = AgentLoop(AgentRunner(), provider, ToolRegistry((tool,)), self._sessions,
+                                 ContextBuilder(self._temporary_directory.name))
+                await _dispatch(loop, "Internal instruction.", "test", "chat", source, {"source": source})
+                self.assertIsNotNone(tool.received_context)
+                self.assertEqual(tool.received_context.session_messages, (HumanMessage("Internal instruction."),))
 
     async def test_empty_session_id_falls_back_to_channel_and_chat_id(self) -> None:
         provider = ScriptedProvider(

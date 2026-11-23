@@ -26,6 +26,7 @@ from ..tools import (
     ToolLoader,
     ToolRegistry,
     bind_request_context,
+    get_request_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -279,13 +280,15 @@ class SubagentManager:
             created_at=_utc_now(),
         )
         self._background_task_records[task_id] = record
-        background_task = asyncio.create_task(
-            self._run_background(record.task, request_context, task_id)
-        )
+        request_context = request_context.without_session_messages()
+        with bind_request_context(request_context):
+            background_task = asyncio.create_task(
+                self._run_background(record.task, request_context, task_id)
+            )
+            background_task.add_done_callback(
+                lambda completed_task: self._remove_background_task(task_id, completed_task)
+            )
         self._background_tasks[task_id] = background_task
-        background_task.add_done_callback(
-            lambda completed_task: self._remove_background_task(task_id, completed_task)
-        )
         logger.info("Background subagent task started (task_id=%s)", task_id)
         return task_id
 
@@ -327,10 +330,11 @@ class SubagentManager:
             blocked_tool_names=_BLOCKED_TOOL_NAMES,
         )
         try:
+            request_context = request_context or get_request_context()
             if request_context is None:
                 result = await self._runner.run(spec)
             else:
-                with bind_request_context(request_context):
+                with bind_request_context(request_context.without_session_messages()):
                     result = await self._runner.run(spec)
         except asyncio.CancelledError:
             raise

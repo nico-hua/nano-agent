@@ -50,7 +50,9 @@ HTTP API 的 `POST /v1/messages` 为了返回当前请求的响应，会直接�
 1. `search_sessions(query, limit=5)` 按短语和关键词查找会话，返回命中片段、会话 ID、消息位置和版本。
 2. `read_session(session_id, revision, message_index, limit=6)` 使用同一命中的定位信息读取附近消息。会话更新或删除后，需要重新搜索。
 
-工具返回的对话正文限于可见的用户和助手消息，会发送给当前模型并作为工具结果保存在本轮会话中。单次搜索最多检查 100 个会话文件，单文件上限 2 MiB，支持不超过 512 字符的会话 ID。搜索结果中的 `partial: true` 表示扫描覆盖不全。实现细节见 [会话检索架构](docs/ARCHITECTURE.md#会话检索)。
+核对当前会话的摘要引用时，可直接调用 `read_session(session_id="@current", message_index=5)`。主 Agent 从本批工具开始前的原文快照读取，包含本轮尚未落盘的消息，返回 `revision: null`。索引直接指向一条可见工具结果时，也可读取该条结果的正文。
+
+搜索和附近消息仅展示可见的用户与助手正文。读取结果会发送给当前模型并作为工具结果保存在本轮会话中。单次搜索最多检查 100 个会话文件，单文件上限 2 MiB，支持不超过 512 字符的会话 ID。搜索结果中的 `partial: true` 表示扫描覆盖不全。实现细节见 [会话检索架构](docs/ARCHITECTURE.md#会话检索)。
 
 ## Skills
 

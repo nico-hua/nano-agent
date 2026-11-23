@@ -1,4 +1,5 @@
 import asyncio
+import json
 import unittest
 from collections.abc import Sequence
 from types import SimpleNamespace
@@ -82,6 +83,29 @@ def message_response(content: Sequence[Any], stop_reason: str = "end_turn") -> A
 
 
 class AnthropicCompatProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_schema_is_only_sent_for_structured_completions(self) -> None:
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
+        client = FakeClient(message_response((SimpleNamespace(type="text", text="{}"),)))
+        provider = AnthropicCompatProvider("key", "https://api.anthropic.com", "model", client=client)
+        messages = (HumanMessage("Return a JSON object."),)
+        await provider.complete(messages, response_schema=schema)
+        await provider.complete(messages)
+        await provider.stream(messages)
+        structured, normal = client.messages.create_requests
+        self.assertEqual(structured["output_config"], {"format": {"type": "json_schema", "schema": schema}})
+        self.assertNotIn("output_config", normal)
+        self.assertNotIn("output_config", client.messages.stream_requests[0])
+
+    async def test_prompt_mode_supplies_schema_to_a_compatible_endpoint(self) -> None:
+        schema = {"type": "object", "properties": {"result": {"type": "string"}}}
+        client = FakeClient(message_response((SimpleNamespace(type="text", text="{}"),)))
+        provider = AnthropicCompatProvider("key", "https://example.test", "model", response_schema_mode="prompt", client=client)
+        await provider.complete((SystemMessage("Summarize."), HumanMessage("Extract the result.")), response_schema=schema)
+        request = client.messages.create_requests[0]
+        self.assertNotIn("output_config", request)
+        self.assertTrue(request["system"].startswith("Summarize.\n\n"))
+        self.assertEqual(json.loads(request["system"].splitlines()[-1]), schema)
+
     async def test_complete_builds_anthropic_messages_request(self) -> None:
         response = message_response((SimpleNamespace(type="text", text="hello"),))
         client = FakeClient(response)

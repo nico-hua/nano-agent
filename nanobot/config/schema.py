@@ -68,6 +68,7 @@ class ProviderSettingsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     type: ProviderType
+    response_schema_mode: Literal["json_schema", "json_object", "prompt"] | None = None
     api_key: str = ""
     api_base: str
     default_model: str = Field(

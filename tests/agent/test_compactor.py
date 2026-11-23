@@ -31,6 +31,7 @@ class SummaryProvider(LLMProvider):
     def __init__(self, response: LLMResponse | Exception) -> None:
         self._response = response
         self.complete_calls: list[tuple[BaseMessage, ...]] = []
+        self.schemas = []
 
     async def complete(
         self,
@@ -38,9 +39,11 @@ class SummaryProvider(LLMProvider):
         tools: Sequence[Tool] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        *, response_schema=None,
     ) -> LLMResponse:
         del tools, max_tokens, temperature
         self.complete_calls.append(tuple(messages))
+        self.schemas.append(response_schema)
         if isinstance(self._response, Exception):
             raise self._response
         return self._response
@@ -57,6 +60,30 @@ class SummaryProvider(LLMProvider):
 
 
 class SessionCompactorTest(unittest.IsolatedAsyncioTestCase):
+    async def test_incomplete_or_refused_response_does_not_advance_the_summary(self) -> None:
+        session = Session.create("test").with_messages((HumanMessage("Task."),))
+        for reason in ("length", "max_tokens", "refusal", "content_filter"):
+            with self.subTest(reason=reason):
+                provider = SummaryProvider(LLMResponse(content=summary_json("A decision."), finish_reason=reason))
+                result = await SessionCompactor(provider).compact_prefix(session, 1)
+                self.assertIs(result, session)
+
+    async def test_summary_requires_four_arrays_of_cited_items(self) -> None:
+        provider = SummaryProvider(LLMResponse(content=summary_json("A decision.")))
+        result = await SessionCompactor(provider).summarize([(0, HumanMessage("A decision."))])
+        self.assertIsNotNone(result)
+        schema, = provider.schemas
+        sections = {"user_constraints", "confirmed_decisions", "key_files", "unfinished_tasks"}
+        self.assertEqual(set(schema["required"]), sections)
+        self.assertEqual(set(schema["properties"]), sections)
+        self.assertFalse(schema["additionalProperties"])
+        for field in schema["properties"].values():
+            self.assertEqual(field["type"], "array")
+            item = field["items"]
+            self.assertEqual(set(item["required"]), {"text", "message_index"})
+            self.assertEqual(item["properties"], {"text": {"type": "string"}, "message_index": {"type": "integer"}})
+            self.assertFalse(item["additionalProperties"])
+
     async def test_does_not_compact_when_raw_history_fits_the_threshold(self) -> None:
         old_turn, recent_turn = _turns()
         session = Session.create("session-1").with_messages((*old_turn, *recent_turn))

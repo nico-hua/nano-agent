@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any
 
 from ..tools import Tool
-from .messages import BaseMessage, ToolCallRequest
+from .messages import BaseMessage, SystemMessage, ToolCallRequest
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +193,25 @@ def _provider_error_message(error: Exception, timeout_seconds: float) -> str:
     return _DEFAULT_PROVIDER_ERROR
 
 
+def schema_instruction(schema: dict[str, Any]) -> SystemMessage:
+    """Describe the requested format to endpoints without native schema enforcement."""
+    encoded = json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+    return SystemMessage(f"Return only a JSON object matching this JSON Schema:\n{encoded}")
+
+
+def append_schema_instruction(messages: Sequence[BaseMessage], schema: dict[str, Any]) -> list[BaseMessage]:
+    """Append the format to the last system prompt, or create one if needed."""
+    instruction = schema_instruction(schema)
+    result = list(messages)
+    for index in reversed(range(len(result))):
+        message = result[index]
+        if isinstance(message, SystemMessage):
+            content = "\n\n".join(filter(None, (message.content, instruction.content)))
+            result[index] = replace(message, content=content)
+            return result
+    return [instruction, *result]
+
+
 class LLMProvider(ABC):
     """Abstract interface implemented by concrete LLM providers."""
 
@@ -201,8 +222,10 @@ class LLMProvider(ABC):
         tools: Sequence[Tool] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Complete a conversation and return a normalized response or error."""
+        """Complete a conversation, optionally requesting JSON matching the given schema."""
 
         raise NotImplementedError
 

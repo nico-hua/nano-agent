@@ -484,7 +484,6 @@ class AgentLoop:
         if task is None:
             raise RuntimeError("AgentLoop requires a running asyncio task")
         is_goal_turn = _is_goal_message(inbound)
-        hide_intermediate_messages = _hides_intermediate_messages(inbound)
         is_streaming = _is_streaming_message(inbound)
         if is_goal_turn and not self._has_active_goal(session_key):
             # A new /goal persists its active GoalState before publishing this
@@ -603,7 +602,7 @@ class AgentLoop:
                     current_message,
                     completed_messages,
                     is_goal_turn=is_goal_turn,
-                    hide_intermediate_messages=hide_intermediate_messages,
+                    hide_intermediate_messages=inbound.metadata.get("source") in {"cron", "subagent"},
                     result=result,
                 )
                 if is_goal_turn and result.stop_reason == "max_iterations":
@@ -1077,10 +1076,6 @@ def _without_system_messages(messages: tuple[BaseMessage, ...]) -> tuple[BaseMes
 
 def _is_goal_message(inbound: InboundMessage) -> bool:
     return inbound.metadata.get("source") == "goal"
-
-
-def _hides_intermediate_messages(inbound: InboundMessage) -> bool:
-    return inbound.metadata.get("source") in {"cron", "subagent"}
 
 
 def _is_streaming_message(inbound: InboundMessage) -> bool:

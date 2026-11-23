@@ -5,13 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..bus import MessageBus
     from ..cron import CronService
+    from ..providers import BaseMessage
     from ..session import SessionManager
     from ..subagent import SubagentManager
 
@@ -50,6 +51,11 @@ class RequestContext:
     sender_id: str
     metadata: Mapping[str, Any] = field(default_factory=dict)
     is_goal_mode: bool = False
+    session_messages: tuple[BaseMessage, ...] | None = field(default=None, repr=False)
+
+    def without_session_messages(self) -> RequestContext:
+        """Keep parent routing information when starting an isolated child task."""
+        return self if self.session_messages is None else replace(self, session_messages=None)
 
     def __post_init__(self) -> None:
         for name, value in (

@@ -16,6 +16,7 @@ from .base import (
     ProviderCallbackError,
     ProviderError,
     TokenUsage,
+    append_schema_instruction,
     is_transient_provider_error,
     run_provider_request,
 )
@@ -45,9 +46,13 @@ class AnthropicCompatProvider(LLMProvider):
         request_timeout_seconds: float = 60.0,
         max_retries: int = 2,
         *,
+        response_schema_mode: str | None = None,
         client: Any | None = None,
     ) -> None:
         self.api_base = api_base
+        self._schema_mode = response_schema_mode or "json_schema"
+        if self._schema_mode not in {"json_schema", "prompt"}:
+            raise ValueError("Anthropic response_schema_mode must be json_schema or prompt")
         self.default_model = default_model
         self.default_max_tokens = default_max_tokens
         self.default_thinking = (
@@ -69,8 +74,14 @@ class AnthropicCompatProvider(LLMProvider):
         tools: Sequence[Tool] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        *,
+        response_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
+        if response_schema is not None and self._schema_mode == "prompt":
+            messages = append_schema_instruction(messages, response_schema)
         request = self._build_request(messages, tools, max_tokens, temperature)
+        if response_schema is not None and self._schema_mode == "json_schema":
+            request["output_config"] = {"format": {"type": "json_schema", "schema": response_schema}}
         logger.debug(
             "Anthropic-compatible completion requested (model=%s, messages=%d, tools=%d)",
             self.default_model,

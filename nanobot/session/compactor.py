@@ -17,6 +17,7 @@ from ..providers import (
     SystemMessage,
     ToolMessage,
 )
+from ..providers.base import schema_instruction
 from .models import Session
 from .tokens import (
     DEFAULT_INPUT_TOKEN_BUDGET,
@@ -32,9 +33,22 @@ DEFAULT_COMPACTION_RECENT_TOKENS = 32_000
 
 
 _SECTIONS = ("user_constraints", "confirmed_decisions", "key_files", "unfinished_tasks")
+_SUMMARY_ITEM = {
+    "type": "object",
+    "properties": {"text": {"type": "string"}, "message_index": {"type": "integer"}},
+    "required": ["text", "message_index"],
+    "additionalProperties": False,
+}
+_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {key: {"type": "array", "items": _SUMMARY_ITEM} for key in _SECTIONS},
+    "required": list(_SECTIONS),
+    "additionalProperties": False,
+}
 _INSTRUCTIONS = SystemMessage(content="""Summarize this conversation for a future assistant turn.
-Return only a JSON object with four arrays: user_constraints, confirmed_decisions,
-key_files, unfinished_tasks. Each item is {"text":"...", "message_index":0}.
+Return one JSON object with all four arrays. Output JSON directly, without Markdown or commentary.
+Example shape: {"user_constraints":[{"text":"Use local storage","message_index":0}],
+"confirmed_decisions":[],"key_files":[],"unfinished_tasks":[]}. Use only evidence from the input.
 Cite the supplied zero-based original message index that supports each item.
 Quote important user constraints verbatim. Record the current objective and remaining work
 in unfinished_tasks. Include verified tool findings. Keep relevant previous items and their
@@ -162,6 +176,8 @@ class SessionCompactor:
         max_tokens: int = 1024,
     ) -> str | None:
         """Fold batches into a validated digest. Every summarizer call also fits its budget."""
+        # Reserve the serialized schema alongside the messages for each batch.
+        schema_tokens = estimate_message_tokens(schema_instruction(_SUMMARY_SCHEMA))
         token_budget = self.input_token_budget
         notes = _parse(previous, range(previous_until)) if previous else None
         if previous and notes is None:
@@ -176,7 +192,7 @@ class SessionCompactor:
             return (_INSTRUCTIONS, HumanMessage(content=_json(payload)))
 
         def fits(messages: Sequence[BaseMessage]) -> bool:
-            return estimate_messages_tokens(messages) + output_limit <= token_budget
+            return estimate_messages_tokens(messages) + schema_tokens + output_limit <= token_budget
 
         while records:
             batch = [records[0]]
@@ -203,11 +219,15 @@ class SessionCompactor:
                     break
                 batch, messages = candidate, expanded
             try:
-                response = await self._provider.complete(messages, max_tokens=output_limit)
+                response = await self._provider.complete(
+                    messages, max_tokens=output_limit, response_schema=_SUMMARY_SCHEMA,
+                )
             except Exception:
                 logger.exception("Provider failed during context compaction")
                 return None
-            if response.error is not None or response.tool_calls or response.finish_reason == "length":
+            if response.error is not None or response.tool_calls or response.finish_reason in {
+                "length", "max_tokens", "refusal", "content_filter",
+            }:
                 return None
             allowed = {row["message_index"] for row in batch}
             if notes:

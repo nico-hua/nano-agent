@@ -73,6 +73,47 @@ def completion_response(
 
 
 class OpenAICompatProviderTest(unittest.IsolatedAsyncioTestCase):
+    async def test_schema_instruction_follows_the_existing_system_prompt(self) -> None:
+        schema = {"type": "object"}
+        for mode in ("json_object", "prompt"):
+            with self.subTest(mode=mode):
+                client = FakeClient(completion_response("{}"))
+                provider = OpenAICompatProvider("key", "https://example.test", "model", response_schema_mode=mode, client=client)
+                messages = [SystemMessage("Summarize the conversation."), HumanMessage("History")]
+                await provider.complete(messages, response_schema=schema)
+                system, user = client.completions.requests[0]["messages"]
+                self.assertEqual(system["role"], "system")
+                self.assertTrue(system["content"].startswith("Summarize the conversation.\n\n"))
+                self.assertEqual(json.loads(system["content"].splitlines()[-1]), schema)
+                self.assertEqual(user, {"role": "user", "content": "History"})
+                self.assertEqual(messages, [SystemMessage("Summarize the conversation."), HumanMessage("History")])
+
+    async def test_schema_is_only_sent_for_structured_completions(self) -> None:
+        schema = {"type": "object", "properties": {}, "additionalProperties": False}
+        for endpoint, mode, expected in (
+            ("https://api.openai.com/v1", None, {"type": "json_schema", "json_schema": {
+                "name": "response", "strict": True, "schema": schema,
+            }}),
+            ("https://api.deepseek.com/v1", None, {"type": "json_object"}),
+            ("https://example.test/v1", "prompt", None),
+        ):
+            with self.subTest(endpoint=endpoint):
+                client = FakeClient(completion_response("{}"))
+                provider = OpenAICompatProvider("key", endpoint, "model", response_schema_mode=mode, client=client)
+                messages = (HumanMessage("Return a JSON object."),)
+                await provider.complete(messages, response_schema=schema)
+                await provider.complete(messages)
+                await provider.stream(messages)
+                structured, normal, streaming = client.completions.requests
+                self.assertEqual(structured.get("response_format"), expected)
+                if mode == "prompt" or expected == {"type": "json_object"}:
+                    instruction = structured["messages"][0]
+                    self.assertEqual(instruction["role"], "system")
+                    self.assertEqual(json.loads(instruction["content"].split("\n", 1)[1]), schema)
+                self.assertEqual(len(normal["messages"]), 1)
+                self.assertNotIn("response_format", normal)
+                self.assertNotIn("response_format", streaming)
+
     async def test_complete_builds_chat_completion_request(self) -> None:
         response = completion_response()
         client = FakeClient(response)

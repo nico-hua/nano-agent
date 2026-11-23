@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import dataclass, replace
 from itertools import groupby
 
 from ..providers import (
@@ -20,7 +21,7 @@ from ..providers import (
 )
 from ..session import Session, SessionCompactor
 from ..session.tokens import estimate_messages_tokens, estimate_tools_tokens
-from ..tools import ToolRegistry
+from ..tools import ToolRegistry, bind_request_context, get_request_context
 from .context import history_summary_message
 
 logger = logging.getLogger(__name__)
@@ -160,13 +161,7 @@ class AgentRunner:
             request = [*request, *conversation[sent:]]
             sent = len(conversation)
             if estimate_messages_tokens(request) > message_budget:
-                # Saved messages and live additions share one index space. The
-                # provider-only system prompt and summary never receive indices.
-                if spec.session is None:
-                    sources = tuple(m for m in conversation if not isinstance(m, SystemMessage))
-                else:
-                    current_turn = conversation[len(spec.messages) - 1:]
-                    sources = (*spec.session.messages, *current_turn)
+                sources = _source_messages(spec, conversation)
                 system = [m for m in request if isinstance(m, SystemMessage)]
                 available = message_budget - estimate_messages_tokens(system)
                 updated = await compactor.compact_for_request(
@@ -230,6 +225,14 @@ class AgentRunner:
                     history_checkpoint=checkpoint,
                 )
 
+            # Freeze the transcript before this batch so sibling tools see the same history.
+            context = get_request_context()
+            batch_context = nullcontext()
+            if spec.session and context and context.session_key == spec.session.key:
+                snapshot = _source_messages(spec, conversation)
+                batch_context = bind_request_context(replace(context, session_messages=snapshot))
+            with batch_context:
+                results = await _execute_tool_batch(spec, response.tool_calls, blocked_tool_names, streaming=streaming)
             conversation.append(
                 AIMessage(
                     content=response.content or "",
@@ -237,14 +240,7 @@ class AgentRunner:
                 )
             )
             tools_used.extend(response.tool_calls)
-            conversation.extend(
-                await _execute_tool_batch(
-                    spec,
-                    response.tool_calls,
-                    blocked_tool_names,
-                    streaming=streaming,
-                )
-            )
+            conversation.extend(results)
             # Keep each assistant tool-call batch contiguous. Provider protocols
             # require every requested tool result before the next user message.
             conversation.extend(await _take_injected_messages(spec))
@@ -262,6 +258,14 @@ class AgentRunner:
             stop_reason="max_iterations",
             history_checkpoint=checkpoint,
         )
+
+
+def _source_messages(spec: AgentRunSpec, conversation: Sequence[BaseMessage]) -> tuple[BaseMessage, ...]:
+    """Use the original session indices for both summary citations and current-session reads."""
+    if spec.session is None:
+        return tuple(m for m in conversation if not isinstance(m, SystemMessage))
+    current_turn = conversation[len(spec.messages) - 1:]
+    return (*spec.session.messages, *current_turn)
 
 
 def _combine_token_usage(

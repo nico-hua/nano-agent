@@ -55,7 +55,7 @@ def _create_anthropic_compat_provider(config: ProviderConfig) -> LLMProvider:
     return AnthropicCompatProvider(**_provider_options(config))
 
 
-def _provider_options(config: ProviderConfig) -> dict[str, str | int | float]:
+def _provider_options(config: ProviderConfig) -> dict[str, str | int | float | None]:
     return {
         "api_key": config.api_key,
         "api_base": config.api_base,
@@ -64,4 +64,5 @@ def _provider_options(config: ProviderConfig) -> dict[str, str | int | float]:
         "default_temperature": config.default_temperature,
         "request_timeout_seconds": config.request_timeout_seconds,
         "max_retries": config.max_retries,
+        "response_schema_mode": config.response_schema_mode,
     }

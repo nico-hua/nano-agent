@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import tempfile
 import unittest
+from dataclasses import replace
 from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from nanobot.tools import (
     ToolLoader,
     ToolRegistry,
     ToolResult,
+    bind_request_context,
     get_request_context,
 )
 
@@ -229,6 +231,21 @@ class SubagentManagerTest(unittest.IsolatedAsyncioTestCase):
         await manager.run("Use the current runtime.", request_context=request_context)
 
         self.assertIs(runner.request_context, request_context)
+
+    async def test_foreground_and_background_children_only_inherit_parent_routing(self) -> None:
+        bus = MessageBus()
+        runner = RuntimeRecordingRunner(_agent_result("Completed."))
+        manager = self._manager(runner, message_bus=bus)
+        route = _request_context()
+        parent = replace(route, session_messages=(HumanMessage("Parent transcript"),))
+        with bind_request_context(parent):
+            await manager.run("Inspect.", request_context=parent)
+            self.assertEqual(runner.request_context, route)
+            runner.request_context = None
+            manager.start_background("Inspect.", request_context=parent)
+            await asyncio.wait_for(bus.consume_inbound(), timeout=1)
+            self.assertEqual(runner.request_context, route)
+            self.assertIs(get_request_context(), parent)
 
     async def test_loads_workspace_tools_into_the_child_registry(self) -> None:
         runner = RecordingRunner(_agent_result("Completed."))

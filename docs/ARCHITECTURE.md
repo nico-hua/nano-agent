@@ -186,7 +186,7 @@ Provider 层在 **nanobot/providers/**。它只负责将不同模型厂商的请
 
 **LLMProvider**（**nanobot/providers/base.py**）定义：
 
-- **complete(messages, tools, max_tokens, temperature)**：一次性返回 LLMResponse。
+- `complete(messages, tools, max_tokens, temperature, *, response_schema=None)` 一次性返回 `LLMResponse`，可通过 `response_schema` 指定 JSON 输出结构。
 - **stream(..., on_delta)**：增量传递文本，并最终返回完整 LLMResponse。
 
 | 对象 | 职责 |
@@ -250,13 +250,17 @@ AgentRunner 返回完整结果后，AgentLoop 一次性保存 user、assistant�
 
 #### 会话检索
 
-`ToolLoader` 使用主 Agent 注入的 `SessionManager` 注册 [会话检索工具](../nanobot/tools/builtin/session_history.py)。两个工具从同一 workspace 的 JSONL 文件读取已保存的历史，跨渠道查找可见的用户和助手正文。这些正文也包括 `summary_until` 之前保存的原始消息。检索逻辑位于 [history.py](../nanobot/session/history.py)。
+`ToolLoader` 使用主 Agent 注入的 `SessionManager` 注册 [会话检索工具](../nanobot/tools/builtin/session_history.py)。跨会话检索从同一 workspace 的 JSONL 文件读取已保存的历史，可跨渠道查找可见的用户和助手正文。这些正文也包括 `summary_until` 之前保存的原始消息。检索逻辑位于 [history.py](../nanobot/session/history.py)。
 
 - `search_sessions` 以忽略大小写的字面短语优先，再匹配同一条消息中出现的全部关键词。每个会话返回一条命中，同相关度时按最近请求时间排序，缺少请求时间时用更新时间。返回的 `message_index` 是原始消息序号，从零开始。
 - `read_session` 使用 `session_id`、`revision` 和 `message_index` 读取命中前后的可见消息。`revision` 取自读到的 JSONL 字节的 SHA-256，重读时版本必须一致。单条正文超过 1,000 字符时会截断并标记 `truncated: true`。
+- 核对当前会话的原始消息索引时，传入 `session_id="@current"` 并省略 `revision`。Runner 在每批工具执行前将已保存原文和本轮原文绑定到 `RequestContext.session_messages`，使用与摘要引用一致的索引。读取该快照时返回真实会话 ID 和 `revision: null`。精确索引可以定位可见的工具结果，附近的其他消息仍限于可见对话。
+- Cron 和子任务回传触发的主 Agent 轮次也使用本轮快照，保存时仅展示最后一条助手消息。子任务继承父请求的路由信息时会清除快照。带有 `revision` 的搜索命中始终按字面 ID 读取磁盘，即使真实 ID 恰好是 `@current`。
 - 工具在后台线程读取文件。搜索最多处理 1,000 个目录项和 100 个会话文件，单文件读取上限为 2 MiB。达到扫描上限或跳过不可读的会话时，返回 `partial: true`。同一存储实例用短锁协调文件读取、原子替换和删除，解析在锁外进行。
 
 ### 6.2 请求组装与预算检查
+
+从请求预算到轮内引用回查的完整示例见[会话压缩机制](SESSION_COMPACTION.md)。
 
 每轮开始时，`AgentLoop` 将会话摘要、`Session.messages[summary_until:]` 和当前用户消息交给 `ContextBuilder`。Builder 从工作区指令、Skills 和最新长期记忆构建系统提示词。如有摘要，在系统提示词后插入一条独立的 `HumanMessage`，再按原顺序追加未压缩历史与当前用户原文。本轮各次业务请求复用相同的系统提示词。
 
@@ -271,6 +275,14 @@ AgentRunner 返回完整结果后，AgentLoop 一次性保存 user、assistant�
 按需和手动压缩共用四组 JSON 条目：`user_constraints`、`confirmed_decisions`、`key_files`、`unfinished_tasks`。每条包含结论 `text` 和来源 `message_index`。主 Agent 的索引从零开始，对应本会话的 `Session.messages`（JSONL 首行是头记录，索引 0 对应第二行）。Subagent 使用本次任务内的索引。只有本批实际提供的消息索引和上一份摘要中已有的索引可作为来源。索引校验能定位原文，结论准确性仍需对照原文判断。
 
 运行结果的 `token_usage` 仅统计业务模型调用。摘要请求单独按输入估算和输出上限检查预算。长输入分批折叠，单条超长消息分片时保留相同索引。运行中无法生成合规摘要或必要消息本身超限时，该轮返回错误；失败时保留已落盘的摘要和边界。
+
+摘要器在每次非流式 `complete(..., response_schema=...)` 调用时传入固定 JSON Schema，并为它预留输入预算。提示词给出 JSON 示例，本地校验检查字段、非空文本和本批允许的引用索引。可在 `provider.response_schema_mode` 指定端点能力：
+
+| 模式 | 摘要请求 |
+| --- | --- |
+| `json_schema` | OpenAI 兼容协议使用严格的 `response_format.json_schema`，Anthropic 兼容协议使用 `output_config.format`。两类适配器默认使用此模式。 |
+| `json_object` | 适用于 OpenAI 兼容协议。通过 `response_format` 请求 JSON 对象，同时在提示中提供 Schema。官方 DeepSeek 的 OpenAI 兼容端点默认使用此模式。 |
+| `prompt` | 在系统消息中提供 Schema，适用于仅支持文本生成的兼容端点。 |
 
 ### 6.4 长期记忆与 Session 的区别
 

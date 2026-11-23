@@ -87,6 +87,57 @@ class HistoryToolTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[-1]["content"], "最终决定先更新数据库，再删除缓存。")
         self.assertNotIn("internal-", search.content + result.content)
 
+    async def test_current_alias_reads_saved_messages_by_index_without_search(self) -> None:
+        saved = self._save_discussion("websocket:active")
+        registry = self._registry()
+        args = {"session_id": "@current", "message_index": 5, "limit": 1}
+        with bind_request_context(RequestContext(saved.key, "websocket", "room", "user")):
+            result = await registry.execute("read_session", args)
+            self.assertTrue(result.success, result.error)
+            payload = json.loads(result.content)
+            self.assertEqual(payload["session_id"], saved.key)
+            self.assertEqual(payload["messages"], [{
+                "message_index": 5, "role": "assistant", "content": saved.messages[5].content, "truncated": False,
+            }])
+            disk_tool = await registry.execute("read_session", {**args, "message_index": 4})
+            self.assertEqual(json.loads(disk_tool.content)["messages"][0]["role"], "tool")
+            other = await registry.execute("read_session", {
+                "session_id": saved.key, "message_index": 4, "revision": payload["revision"],
+            })
+            self.assertFalse(other.success)
+            pinned = await registry.execute("read_session", {**args, "session_id": saved.key, "revision": payload["revision"]})
+            self.assertEqual(result.content, pinned.content)
+            hidden = await registry.execute("read_session", {**args, "message_index": 2})
+            self.assertFalse(hidden.success)
+            missing_revision = await registry.execute("read_session", {**args, "session_id": saved.key})
+            self.assertFalse(missing_revision.success)
+            self.assertIn("revision", missing_revision.content)
+        unbound = await registry.execute("read_session", args)
+        self.assertFalse(unbound.success)
+        self.assertIn("context", unbound.content)
+
+    async def test_search_hit_with_literal_alias_as_its_key_can_still_be_read(self) -> None:
+        self._save_discussion("@current")
+        registry = self._registry()
+        args = await self._read_arguments(registry)
+        with bind_request_context(RequestContext("elsewhere", "qq", "room", "user")):
+            result = await registry.execute("read_session", args)
+        self.assertTrue(result.success, result.error)
+        self.assertEqual(json.loads(result.content)["session_id"], "@current")
+
+    async def test_snapshot_reads_across_saved_boundary_and_only_exposes_the_anchored_tool(self) -> None:
+        saved = self._save_discussion("s")
+        snapshot = (*saved.messages, HumanMessage("This turn"), ToolMessage("secret", tool_call_id="x", is_visible=False))
+        registry = self._registry()
+        with bind_request_context(RequestContext("s", "api", "chat", "user", session_messages=snapshot)):
+            args = {"session_id": "@current", "message_index": 4}
+            tool = await registry.execute("read_session", args)
+            self.assertEqual([m["message_index"] for m in json.loads(tool.content)["messages"]], [0, 3, 4, 5, 6])
+            user = await registry.execute("read_session", {**args, "message_index": 6})
+            self.assertEqual([m["message_index"] for m in json.loads(user.content)["messages"]], [0, 3, 5, 6])
+            for index in (1, 2, 7, 8):
+                self.assertFalse((await registry.execute("read_session", {**args, "message_index": index})).success)
+
     async def test_literal_search_ranks_phrase_ahead_of_keyword_matches(self) -> None:
         for key, content in (("phrase", "Redis 缓存一致性"), ("keywords", "缓存一致性与Redis")):
             self.sessions.save(Session.create(key).with_messages((HumanMessage(content=content),)))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from threading import Event
 
@@ -69,32 +69,39 @@ def search_sessions(
 def read_session(
     sessions: SessionManager,
     session_id: str,
-    revision: str,
+    revision: str | None,
     message_index: int,
     limit: int,
+    *,
+    snapshot: Sequence[BaseMessage] | None = None,
 ) -> dict[str, object]:
-    """Read a visible window around an anchor from the same saved revision."""
+    """Read nearby visible messages. A pinned revision always reads the saved file."""
+    saved_revision = None
+    if snapshot is None or revision is not None:
+        try:
+            saved = sessions.read_history_session(session_id, max_bytes=_MAX_SESSION_BYTES)
+        except (OSError, TypeError, ValueError, RecursionError) as error:
+            logger.warning("Could not load a session for history reading (error_type=%s)", type(error).__name__)
+            raise SessionHistoryError("Session history could not be read.") from error
+        if saved is None:
+            if revision is None:
+                raise SessionHistoryError("The current session has no saved history.")
+            raise SessionHistoryError("Session was not found. Run search_sessions again.")
+        session, saved_revision = saved
+        if revision is not None and saved_revision != revision:
+            raise SessionHistoryError("Session history changed. Run search_sessions again.")
+        snapshot = session.messages
 
-    try:
-        snapshot = sessions.read_history_session(session_id, max_bytes=_MAX_SESSION_BYTES)
-    except (OSError, TypeError, ValueError, RecursionError) as error:
-        logger.warning("Could not load a session for history reading (error_type=%s)", type(error).__name__)
-        raise SessionHistoryError("Session history could not be read.") from error
-    if snapshot is None:
-        raise SessionHistoryError("Session was not found. Run search_sessions again.")
-    session, saved_revision = snapshot
-    if saved_revision != revision:
-        raise SessionHistoryError("Session history changed. Run search_sessions again.")
-
-    visible = list(_visible_messages(session))
+    tool_index = message_index if revision is None else None
+    visible = list(_visible_messages(snapshot, tool_index=tool_index))
     anchor = next((position for position, (index, _) in enumerate(visible) if index == message_index), None)
     if anchor is None:
         raise SessionHistoryError("message_index does not identify a visible message.")
 
     start = max(0, min(anchor - limit // 2, len(visible) - limit))
     return {
-        "session_id": session.key,
-        "revision": revision,
+        "session_id": session_id,
+        "revision": saved_revision,
         "messages": [
             {
                 "message_index": index,
@@ -107,9 +114,13 @@ def read_session(
     }
 
 
-def _visible_messages(session: Session) -> Iterator[tuple[int, BaseMessage]]:
-    for index, message in enumerate(session.messages):
-        if message.is_visible and message.role in {"user", "assistant"} and message.content.strip():
+def _visible_messages(
+    messages: Sequence[BaseMessage], *, tool_index: int | None = None,
+) -> Iterator[tuple[int, BaseMessage]]:
+    for index, message in enumerate(messages):
+        if not message.is_visible:
+            continue
+        if index == tool_index and message.role == "tool" or message.role in {"user", "assistant"} and message.content.strip():
             yield index, message
 
 
@@ -120,7 +131,7 @@ def _best_match(
     cancelled: Event,
 ) -> tuple[int, int, str] | None:
     best = None
-    for index, message in _visible_messages(session):
+    for index, message in _visible_messages(session.messages):
         if cancelled.is_set():
             break
         text = " ".join(message.content.split())

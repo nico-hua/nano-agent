@@ -12,6 +12,7 @@ from nanobot.agent import (
 from nanobot.providers import AIMessage, HumanMessage, LLMResponse, SystemMessage, TokenUsage, ToolCallRequest, ToolMessage
 from nanobot.session import SessionCompactor, SessionManager
 from nanobot.tools import Tool, ToolRegistry, ToolResult
+from nanobot.tools.builtin.session_history import ReadSessionTool
 from .test_compactor import SummaryProvider, summary_json
 from .test_loop import _dispatch
 
@@ -35,11 +36,12 @@ class BudgetProvider(SummaryProvider):
         self.summary_calls = 0
         self.fragments = {}
 
-    async def complete(self, messages, tools=None, max_tokens=None, temperature=None):
+    async def complete(self, messages, tools=None, max_tokens=None, temperature=None, *, response_schema=None):
         self.inputs.append(estimate_messages_tokens(messages) + estimate_tools_tokens(tools or ()))
         if max_tokens is not None:
             self.summary_calls += 1
-            self.inputs[-1] += max_tokens
+            schema_text = json.dumps(response_schema, ensure_ascii=False, separators=(",", ":"))
+            self.inputs[-1] += max_tokens + estimate_messages_tokens([SystemMessage(schema_text)])
             records = json.loads(messages[1].content)["messages"]
             self.summarized_indices.update(row["message_index"] for row in records)
             for record in records:
@@ -60,6 +62,44 @@ class BudgetProvider(SummaryProvider):
 
 
 class RunContextTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reads_a_compaction_citation_before_the_turn_is_saved(self):
+        with TemporaryDirectory() as workspace:
+            sessions = SessionManager(workspace)
+            history = (HumanMessage("Question."), AIMessage("Answer.")) * 5
+            sessions.save(sessions.get_or_create("s").with_messages(history).with_summary(
+                summary_json("Previous answer.", 9), 10,
+            ))
+
+            class CitationProvider(BudgetProvider):
+                async def complete(self, messages, **kwargs):
+                    if kwargs.get("response_schema") or not self.requests:
+                        return await super().complete(messages, **kwargs)
+                    if isinstance(messages[-1], HumanMessage):
+                        notes = json.loads(messages[-1].content.split("\n", 1)[1])
+                        index = notes["confirmed_decisions"][0]["message_index"]
+                        return LLMResponse(tool_calls=(ToolCallRequest("verify", "read_session", {
+                            "session_id": "@current", "message_index": index, "limit": 1,
+                        }),))
+                    self.disk_before_save = SessionManager(workspace).get_or_create("s").messages
+                    return LLMResponse(content=messages[-1].content)
+
+            provider = CitationProvider()
+            loop = AgentLoop(AgentRunner(SessionCompactor(provider, input_token_budget=1800)),
+                             provider, ToolRegistry((LargeResult(), ReadSessionTool(sessions))),
+                             sessions, ContextBuilder(workspace))
+            reply = await _dispatch(loop, "Use the data.", "test", "chat", "s")
+            self.assertEqual(provider.disk_before_save, history)
+            self.assertGreater(provider.summary_calls, 0)
+            payload = json.loads(reply.content)
+            self.assertIsNone(payload["revision"])
+            self.assertEqual(payload["session_id"], "s")
+            item, = payload["messages"]
+            self.assertEqual((item["message_index"], item["role"]), (12, "tool"))
+            saved = SessionManager(workspace).get_or_create("s").messages[12]
+            self.assertTrue(item["truncated"])
+            self.assertEqual(item["content"], saved.content[:1000])
+            self.assertEqual(saved.tool_call_id, "1")
+
     async def test_keeps_recent_message_at_the_compactor_budget_boundary(self):
         system = SystemMessage("Rules.")
         # Of the 1,192 tokens after the system prompt, 894 are reserved for recent messages.
@@ -177,7 +217,7 @@ class RunContextTest(unittest.IsolatedAsyncioTestCase):
         started = asyncio.Event()
 
         class WaitingProvider(BudgetProvider):
-            async def complete(self, messages, tools=None, max_tokens=None, temperature=None):
+            async def complete(self, messages, tools=None, max_tokens=None, temperature=None, *, response_schema=None):
                 if max_tokens is None:
                     raise AssertionError("Expected a summary before the first task request")
                 started.set()
