@@ -5,16 +5,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
 from unittest.mock import patch
 
-from nanobot.agent import (
-    ContextBuilder,
-    ContextWindowExceededError,
-    estimate_message_tokens,
-    estimate_messages_tokens,
-    estimate_tools_tokens,
-)
+from nanobot.agent import ContextBuilder, estimate_message_tokens
 from nanobot.providers import (
     AIMessage,
     HumanMessage,
@@ -23,27 +16,6 @@ from nanobot.providers import (
     ToolMessage,
 )
 from nanobot.session import Session
-from nanobot.tools import Tool, ToolParameter, ToolResult
-
-
-class SchemaTool(Tool):
-    def __init__(self) -> None:
-        super().__init__(
-            name="lookup",
-            description="Look up the detailed information requested by the user.",
-            parameters=(
-                ToolParameter(
-                    name="query",
-                    description="The detailed lookup query.",
-                    type="string",
-                    required=True,
-                ),
-            ),
-        )
-
-    async def execute(self, **arguments: Any) -> ToolResult:
-        del arguments
-        return ToolResult(content="unused")
 
 
 class ContextBuilderTest(unittest.TestCase):
@@ -78,12 +50,12 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertNotIn("## Agent Style", prompt)
         self.assertNotIn("## User Profile", prompt)
 
-    def test_places_memory_and_summary_after_workspace_and_skill_sections(self) -> None:
+    def test_places_memory_after_workspace_and_skill_sections(self) -> None:
         self._write("AGENTS.md", "Workspace rules.")
         self._write_skill("guide", "---\nname: guide\ndescription: A guide.\n---\nSkill body.\n")
         self._write_memory("Current preference.")
         messages = ContextBuilder(self._workspace).build_request_messages(
-            (), HumanMessage(content="Use $guide."), summary="Earlier decisions.",
+            (), HumanMessage(content="Use $guide."),
         )
 
         prompt = messages[0].content
@@ -91,7 +63,6 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertLess(prompt.index("## Available Skills"), prompt.index("Skill body."))
         self.assertTrue(prompt.endswith(
             "[/Active Skills]\n\n## Long-term Memory\n\nCurrent preference."
-            "\n\n## Conversation Summary\n\nEarlier decisions."
         ))
 
     def test_uses_a_stable_context_file_order(self) -> None:
@@ -434,218 +405,28 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertEqual(after_first_build, before)
         self.assertFalse((self._workspace / "sessions").exists())
 
-    def test_keeps_all_history_when_it_fits_the_token_budget(self) -> None:
+    def test_assembles_every_unsummarized_message_in_order(self) -> None:
+        call = ToolCallRequest(id="call", name="read", arguments={})
+        question = HumanMessage("Repeat this.")
         history = (
-            HumanMessage(content="First question."),
-            AIMessage(content="First answer."),
-            HumanMessage(content="Second question."),
-            AIMessage(content="Second answer."),
+            HumanMessage("Earlier request."), AIMessage("", tool_calls=(call,)),
+            ToolMessage("x" * 600_000, tool_call_id=call.id), AIMessage("Done."), question,
         )
-        builder = self._builder_with_history_budget(
-            HumanMessage(content="Current question."),
-            estimate_messages_tokens(history),
-        )
+        request = ContextBuilder(self._workspace).build_request_messages(history, question)
+        self.assertIsInstance(request[0], SystemMessage)
+        self.assertEqual(request[1:], (*history, question))
 
-        messages = builder.build_request_messages(
-            history,
-            HumanMessage(content="Current question."),
-        )
-
-        self.assertEqual(messages[1:-1], history)
-        self.assertEqual(messages[-1], HumanMessage(content="Current question."))
-
-    def test_trims_to_complete_recent_turns_without_orphaning_tool_results(self) -> None:
-        tool_call = ToolCallRequest(
-            id="call-1",
-            name="get_weather",
-            arguments={"city": "Shanghai"},
-        )
-        older_turn = (
-            HumanMessage(content="Old question " * 20),
-            AIMessage(content="Calling a tool.", tool_calls=(tool_call,)),
-            ToolMessage(content="Sunny", tool_call_id="call-1"),
-            AIMessage(content="Old answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        history = (*older_turn, *recent_turn)
+    def test_places_saved_summary_before_recent_messages(self) -> None:
         builder = ContextBuilder(self._workspace)
-
-        trimmed = builder.trim_history(
-            history,
-            token_budget=estimate_messages_tokens(recent_turn),
+        history = (HumanMessage("Use local caching instead."), AIMessage("Understood."))
+        current = HumanMessage("Write the design.")
+        system, summary, *recent = builder.build_request_messages(
+            history, current, summary="Originally selected Redis.",
         )
-
-        self.assertEqual(trimmed, recent_turn)
-        self.assertLessEqual(
-            estimate_messages_tokens(trimmed),
-            estimate_messages_tokens(recent_turn),
-        )
-        self.assertNotIn(older_turn[2], trimmed)
-
-    def test_preserves_tool_call_and_result_order_when_the_turn_fits(self) -> None:
-        tool_call = ToolCallRequest(
-            id="call-1",
-            name="get_weather",
-            arguments={"city": "Shanghai"},
-        )
-        turn = (
-            HumanMessage(content="What is the weather?"),
-            AIMessage(content="", tool_calls=(tool_call,)),
-            ToolMessage(content="Sunny", tool_call_id="call-1"),
-            AIMessage(content="It is sunny."),
-        )
-        builder = ContextBuilder(self._workspace)
-
-        self.assertEqual(
-            builder.trim_history(turn, token_budget=estimate_messages_tokens(turn)),
-            turn,
-        )
-
-    def test_current_message_is_sent_once_when_already_at_the_history_tail(self) -> None:
-        current_message = HumanMessage(content="Current question.")
-        builder = ContextBuilder(self._workspace)
-
-        messages = builder.build_request_messages(
-            (HumanMessage(content="Previous question."), current_message),
-            current_message,
-        )
-
-        self.assertEqual(
-            messages,
-            (
-                messages[0],
-                HumanMessage(content="Previous question."),
-                current_message,
-            ),
-        )
-        self.assertEqual(messages.count(current_message), 1)
-
-    def test_keeps_system_and_current_message_when_remaining_history_budget_is_zero(self) -> None:
-        current_message = HumanMessage(content="Current question " * 20)
-        builder = self._builder_with_history_budget(current_message, 0)
-
-        messages = builder.build_request_messages(
-            (HumanMessage(content="Previous question."),),
-            current_message,
-        )
-
-        self.assertIsInstance(messages[0], SystemMessage)
-        self.assertEqual(messages[-1], current_message)
-        self.assertEqual(len(messages), 2)
-
-    def test_includes_saved_summary_before_recent_messages(self) -> None:
-        covered_turn = (
-            HumanMessage(content="Covered question."),
-            AIMessage(content="Covered answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        self._write_memory("The user is working on an Agent project.")
-        builder = ContextBuilder(self._workspace)
-
-        messages = builder.build_request_messages(
-            (*covered_turn, *recent_turn),
-            HumanMessage(content="Current question."),
-            summary="The covered question was answered.",
-            summary_until=len(covered_turn),
-        )
-
-        self.assertIsInstance(messages[0], SystemMessage)
-        self.assertIn("## Conversation Summary", messages[0].content)
-        self.assertIn("The covered question was answered.", messages[0].content)
-        self.assertIn("## Long-term Memory", messages[0].content)
-        self.assertIn("The user is working on an Agent project.", messages[0].content)
-        self.assertLess(
-            messages[0].content.index("## Long-term Memory"),
-            messages[0].content.index("## Conversation Summary"),
-        )
-        self.assertEqual(messages[1:-1], recent_turn)
-        self.assertEqual(messages[-1], HumanMessage(content="Current question."))
-
-    def test_applies_history_trimming_after_the_summary_boundary(self) -> None:
-        covered_turn = (
-            HumanMessage(content="Covered question."),
-            AIMessage(content="Covered answer."),
-        )
-        older_raw_turn = (
-            HumanMessage(content="Older raw question " * 20),
-            AIMessage(content="Older raw answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        builder = self._builder_with_history_budget(
-            HumanMessage(content="Current question."),
-            estimate_messages_tokens(recent_turn),
-            summary="The covered question was answered.",
-        )
-
-        messages = builder.build_request_messages(
-            (*covered_turn, *older_raw_turn, *recent_turn),
-            HumanMessage(content="Current question."),
-            summary="The covered question was answered.",
-            summary_until=len(covered_turn),
-        )
-
-        self.assertEqual(messages[1:-1], recent_turn)
-        self.assertNotIn(older_raw_turn[0], messages)
-
-    def test_counts_fixed_request_content_against_the_context_window(self) -> None:
-        summary = "A prior conversation summary."
-        current_message = HumanMessage(content="Current question.")
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        tool = SchemaTool()
-        reserve = 8
-        system_prompt = ContextBuilder(self._workspace).build_system_prompt()
-        system_message = SystemMessage(
-            content=f"{system_prompt}\n\n## Conversation Summary\n\n{summary}"
-        )
-        required_tokens = (
-            estimate_messages_tokens((system_message, current_message))
-            + estimate_tools_tokens((tool,))
-            + reserve
-        )
-        context_window_tokens = required_tokens + estimate_messages_tokens(recent_turn) - 1
-        builder = ContextBuilder(
-            self._workspace,
-            context_window_tokens=context_window_tokens,
-            output_token_reserve=reserve,
-        )
-
-        with_tools = builder.build_request_messages(
-            recent_turn,
-            current_message,
-            summary=summary,
-            tools=(tool,),
-        )
-        without_tools = builder.build_request_messages(
-            recent_turn,
-            current_message,
-            summary=summary,
-        )
-
-        self.assertNotIn(recent_turn[0], with_tools)
-        self.assertIn(recent_turn[0], without_tools)
-        with self.assertRaises(ContextWindowExceededError):
-            ContextBuilder(
-                self._workspace,
-                context_window_tokens=required_tokens - 1,
-                output_token_reserve=reserve,
-            ).build_request_messages(
-                (),
-                current_message,
-                summary=summary,
-                tools=(tool,),
-            )
+        self.assertEqual(system, SystemMessage(builder.build_system_prompt()))
+        self.assertIsInstance(summary, HumanMessage)
+        self.assertIn("Originally selected Redis.", summary.content)
+        self.assertEqual(recent, [*history, current])
 
     def test_token_estimate_grows_with_text_and_counts_tool_call_arguments(self) -> None:
         short_message = HumanMessage(content="short")
@@ -692,22 +473,3 @@ class ContextBuilderTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return path
-
-    def _builder_with_history_budget(
-        self,
-        current_message: HumanMessage,
-        history_budget: int,
-        *,
-        summary: str | None = None,
-    ) -> ContextBuilder:
-        prompt = ContextBuilder(self._workspace).build_system_prompt()
-        if summary is not None:
-            prompt = f"{prompt}\n\n## Conversation Summary\n\n{summary}"
-        required_tokens = estimate_messages_tokens(
-            (SystemMessage(content=prompt), current_message)
-        )
-        return ContextBuilder(
-            self._workspace,
-            context_window_tokens=required_tokens + history_budget,
-            output_token_reserve=0,
-        )

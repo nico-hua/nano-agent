@@ -32,7 +32,7 @@ from nanobot.config import (
     load_nanobot_config,
 )
 from nanobot.providers import OpenAICompatProvider, ToolMessage
-from nanobot.session import SessionManager
+from nanobot.session import SessionCompactor, SessionManager
 from nanobot.tools import Tool, ToolParameter, ToolRegistry, ToolResult
 
 _RUN_LIVE_TESTS = os.environ.get("NANOBOT_RUN_QQ_DEEPSEEK_LIVE_TESTS") == "1"
@@ -106,22 +106,21 @@ class QQDeepSeekEndToEndLiveTest(unittest.IsolatedAsyncioTestCase):
             qq_config,
         )
         self._manager = ChannelManager(self._bus, (self._channel,))
+        provider = OpenAICompatProvider(
+            api_key=config.provider.api_key,
+            api_base=config.provider.api_base,
+            default_model=config.provider.default_model,
+            default_max_tokens=config.provider.default_max_tokens,
+            default_temperature=config.provider.default_temperature,
+        )
         self._loop = AgentLoop(
-            runner=AgentRunner(),
-            provider=OpenAICompatProvider(
-                api_key=config.provider.api_key,
-                api_base=config.provider.api_base,
-                default_model=config.provider.default_model,
-                default_max_tokens=config.provider.default_max_tokens,
-                default_temperature=config.provider.default_temperature,
-            ),
+            runner=AgentRunner(SessionCompactor(
+                provider, input_token_budget=config.context_window_tokens - config.provider.default_max_tokens,
+            )),
+            provider=provider,
             tool_registry=ToolRegistry((self._weather,)),
             session_manager=self._sessions,
-            context_builder=ContextBuilder(
-                config.workspace,
-                config.context_window_tokens,
-                config.provider.default_max_tokens,
-            ),
+            context_builder=ContextBuilder(config.workspace),
             message_bus=self._bus,
         )
         self._loop_task: asyncio.Task[None] | None = None

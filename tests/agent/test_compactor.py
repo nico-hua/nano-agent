@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 from collections.abc import Awaitable, Callable, Sequence
 
@@ -17,6 +18,13 @@ from nanobot.providers import (
 )
 from nanobot.session import Session, SessionCompactor
 from nanobot.tools import Tool
+
+
+def summary_json(text: str, index: int = 0) -> str:
+    return json.dumps({
+        "user_constraints": [], "confirmed_decisions": [{"text": text, "message_index": index}],
+        "key_files": [], "unfinished_tasks": [],
+    }, separators=(",", ":"))
 
 
 class SummaryProvider(LLMProvider):
@@ -67,7 +75,7 @@ class SessionCompactorTest(unittest.IsolatedAsyncioTestCase):
     async def test_manual_compaction_uses_the_recent_budget_as_its_trigger(self) -> None:
         old_turn, recent_turn = _turns()
         session = Session.create("session-1").with_messages((*old_turn, *recent_turn))
-        provider = SummaryProvider(LLMResponse(content="The weather request was completed."))
+        provider = SummaryProvider(LLMResponse(content=summary_json("The weather request was completed.", 3)))
         compactor = SessionCompactor(
             provider,
             token_threshold=estimate_messages_tokens(session.messages) + 1,
@@ -78,7 +86,7 @@ class SessionCompactorTest(unittest.IsolatedAsyncioTestCase):
         manual = await compactor.compact_manually(session)
 
         self.assertIs(automatic, session)
-        self.assertEqual(manual.summary, "The weather request was completed.")
+        self.assertEqual(manual.summary, summary_json("The weather request was completed.", 3))
         self.assertEqual(manual.summary_until, len(old_turn))
         self.assertEqual(manual.messages[manual.summary_until :], recent_turn)
         self.assertEqual(len(provider.complete_calls), 1)
@@ -86,7 +94,7 @@ class SessionCompactorTest(unittest.IsolatedAsyncioTestCase):
     async def test_generates_summary_without_removing_complete_tool_turns(self) -> None:
         old_turn, recent_turn = _turns()
         session = Session.create("session-1").with_messages((*old_turn, *recent_turn))
-        provider = SummaryProvider(LLMResponse(content="The weather request was completed."))
+        provider = SummaryProvider(LLMResponse(content=summary_json("The weather request was completed.", 3)))
         compactor = SessionCompactor(
             provider,
             token_threshold=estimate_messages_tokens(recent_turn) + 1,
@@ -96,7 +104,7 @@ class SessionCompactorTest(unittest.IsolatedAsyncioTestCase):
         compacted = await compactor.compact(session)
 
         self.assertEqual(compacted.messages, session.messages)
-        self.assertEqual(compacted.summary, "The weather request was completed.")
+        self.assertEqual(compacted.summary, summary_json("The weather request was completed.", 3))
         self.assertEqual(compacted.summary_until, len(old_turn))
         self.assertEqual(compacted.messages[compacted.summary_until :], recent_turn)
         self.assertEqual(len(provider.complete_calls), 1)
@@ -117,6 +125,36 @@ class SessionCompactorTest(unittest.IsolatedAsyncioTestCase):
         self.assertIs(compacted, session)
         self.assertIsNone(session.summary)
         self.assertEqual(session.summary_until, 0)
+
+    async def test_repeated_compaction_accepts_only_carried_or_new_source_indices(self) -> None:
+        old, recent = _turns()
+        session = Session.create("test").with_messages((*old, *recent, *recent)).with_summary(
+            summary_json("Shanghai is sunny.", 3), len(old)
+        )
+        for index, accepted in ((3, True), (4, True), (1, False), (6, False)):
+            with self.subTest(index=index):
+                provider = SummaryProvider(LLMResponse(content=summary_json("Finding.", index)))
+                compactor = SessionCompactor(provider, token_threshold=2, recent_token_budget=1)
+                result = await compactor.compact(session)
+                payload = json.loads(provider.complete_calls[0][1].content)
+                self.assertEqual([m["message_index"] for m in payload["messages"]], [4, 5])
+                self.assertEqual(result.summary_until, 6 if accepted else 4)
+                if not accepted:
+                    self.assertIs(result, session)
+
+    async def test_legacy_summary_is_rebuilt_from_original_evidence(self) -> None:
+        old, recent = _turns()
+        session = Session.create("test").with_messages((*old, *recent, *recent)).with_summary(
+            "An older summary without citations.", len(old)
+        )
+        provider = SummaryProvider(LLMResponse(content=summary_json("Shanghai is sunny.", 3)))
+        result = await SessionCompactor(provider, token_threshold=2, recent_token_budget=1).compact(session)
+
+        payload = json.loads(provider.complete_calls[0][1].content)
+        self.assertIsNone(payload["previous_summary"])
+        self.assertEqual([m["message_index"] for m in payload["messages"]], list(range(6)))
+        self.assertEqual(result.summary_until, 6)
+        self.assertEqual(result.messages, session.messages)
 
 
 def _turns() -> tuple[tuple[BaseMessage, ...], tuple[BaseMessage, ...]]:

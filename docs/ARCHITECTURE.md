@@ -102,7 +102,7 @@ Cron、后台 Subagent 和 MessageTool 因此能够复用同一链路，而不�
   -> ContextBuilder.build_request_messages(...)
   -> AgentRunner.run(...) 或 run_stream(...)
   -> 仅在 Runner 返回完整消息序列后保存 Session
-  -> 触发记忆事件与后台摘要压缩
+  -> 追加长期记忆事件
   -> 生成最终 OutboundMessage 或流式 turn_end
 ~~~
 
@@ -145,7 +145,7 @@ WebSocketChannel 将这些 OutboundMessage 转换为浏览器的 **delta**、**t
 - **_active_turn_tasks**：可被 /stop 取消的运行任务。
 - **_streaming_turns**：活动流式任务与原始入站路由的映射，用于取消时补发 cancelled turn_end。
 - **_goal_turn_tasks** 和 **_pending_user_messages**：目标运行与用户追加输入的会话级状态。
-- **_compaction_tasks** 与 MemoryEventConsumer：完成保存后的非阻塞后处理。
+- **MemoryEventConsumer** 在会话保存后异步整理长期记忆。
 
 CommandRouter 在调用 Runner 前拦截斜杠命令。普通消息由 ContextBuilder 生成 LLM 上下文，再创建 AgentRunSpec。AgentLoop 还根据运行模式从 Provider 可见工具和 Runner 的可执行工具中移除被禁止的工具。
 
@@ -256,44 +256,29 @@ AgentRunner 返回完整结果后，AgentLoop 一次性保存 user、assistant�
 - `read_session` 使用 `session_id`、`revision` 和 `message_index` 读取命中前后的可见消息。`revision` 取自读到的 JSONL 字节的 SHA-256，重读时版本必须一致。单条正文超过 1,000 字符时会截断并标记 `truncated: true`。
 - 工具在后台线程读取文件。搜索最多处理 1,000 个目录项和 100 个会话文件，单文件读取上限为 2 MiB。达到扫描上限或跳过不可读的会话时，返回 `partial: true`。同一存储实例用短锁协调文件读取、原子替换和删除，解析在锁外进行。
 
-### 6.2 ContextBuilder 是请求态
+### 6.2 请求组装与预算检查
 
-**ContextBuilder**（**nanobot/agent/context.py**）在每轮开始时从 workspace 组装一次系统提示词。开头依次放置基础指令、AGENTS.md、SOUL.md、USER.md、常驻 Skill 和 Skill 目录，再按本轮请求加载显式激活的 Skill。末尾依次追加最新长期记忆和会话摘要。同一轮的多次模型调用共享这份提示词。
+每轮开始时，`AgentLoop` 将会话摘要、`Session.messages[summary_until:]` 和当前用户消息交给 `ContextBuilder`。Builder 从工作区指令、Skills 和最新长期记忆构建系统提示词。如有摘要，在系统提示词后插入一条独立的 `HumanMessage`，再按原顺序追加未压缩历史与当前用户原文。本轮各次业务请求复用相同的系统提示词。
 
-它的输入是 Session 历史、当前 HumanMessage、已保存摘要和可用工具；输出是发送给 Provider 的 LLM 消息序列。它不保存 Session，也不执行 Skill 内容。
+主 Agent 和 Subagent 的 `AgentRunner` 在每次普通或流式模型调用前估算消息 Token 和本轮可用工具的 Schema 大小，并预留模型输出空间。请求放得下时直接发送。超限时，Runner 给新摘要预留空间，优先保留能放下的最近消息，并保持工具调用与对应结果完整，再请 `SessionCompactor` 把较早的连续前缀并入会话摘要。发送前按生成的实际摘要重新估算。
 
-可用于原始历史的预算按下式计算：
+### 6.3 按需压缩与会话保存
 
-~~~text
-context_window_tokens
-  - system prompt
-  - summary
-  - current user message
-  - tool schema
-  - output token reserve
-  = available history budget
-~~~
+- 会话摘要只覆盖已经完成的历史轮次。AgentLoop 在本轮成功保存时，一并写入完整消息、更新后的摘要和 `summary_until`。下一轮从这个边界继续。
+- 轮内压缩同样将旧摘要与较早的连续原文合并成一条摘要消息，其后保留近期原文。若较早的原文包含本轮请求，摘要需尽量引用用户的关键限制，并记录当前目标和未完成的工作。覆盖本轮消息的摘要仅在当前运行中使用，Session 消息列表保存原始对话和工具结果。
+- `/compact` 仍可主动整理已保存历史，保留由 `agent.compaction_recent_tokens` 指定的近期原文。日常运行是否压缩取决于实际请求预算。旧的 `agent.compaction_threshold_tokens` 配置仍可读取，不触发后台模型调用。
 
-预算不足会抛出 ContextWindowExceededError。system prompt、摘要、当前用户消息和工具 schema 不会被裁掉。当前 token 估算是稳定的启发式算法，不是模型原生 tokenizer；历史裁剪按完整 user turn 分组，避免拆开工具调用和结果。
+按需和手动压缩共用四组 JSON 条目：`user_constraints`、`confirmed_decisions`、`key_files`、`unfinished_tasks`。每条包含结论 `text` 和来源 `message_index`。主 Agent 的索引从零开始，对应本会话的 `Session.messages`（JSONL 首行是头记录，索引 0 对应第二行）。Subagent 使用本次任务内的索引。只有本批实际提供的消息索引和上一份摘要中已有的索引可作为来源。索引校验能定位原文，结论准确性仍需对照原文判断。
 
-### 6.3 Session 摘要
-
-**SessionCompactor**（**nanobot/session/compactor.py**）只处理 summary_until 之后的原始消息：
-
-- 自动压缩阈值为 agent.compaction_threshold_tokens。
-- 手动 /compact 仅在原始历史超过 agent.compaction_recent_tokens 时执行。
-- 它总结较早的完整 turn，保留最近完整 turn。
-- 它更新 summary 与 summary_until，但不删除完整原始 messages。
-
-AgentLoop 在完整 turn 保存后异步调度压缩，重新获取同一个 session 锁再保存摘要，因此不会延迟当前回复，也不会覆盖更晚的 Session。
+运行结果的 `token_usage` 仅统计业务模型调用。摘要请求单独按输入估算和输出上限检查预算。长输入分批折叠，单条超长消息分片时保留相同索引。运行中无法生成合规摘要或必要消息本身超限时，该轮返回错误；失败时保留已落盘的摘要和边界。
 
 ### 6.4 长期记忆与 Session 的区别
 
 | 数据 | 位置 | 用途 | 进入普通请求上下文？ |
 | --- | --- | --- | --- |
-| Session.messages | workspace/sessions/*.jsonl | 当前会话完整短期历史与工具链 | 是，预算内裁剪后 |
+| Session.messages | workspace/sessions/*.jsonl | 当前会话完整短期历史与工具链 | 是，按预算使用摘要与近期原文 |
 | last_request_at | Session JSONL header | 记录最近成功请求时间，供历史检索排序 | 否 |
-| summary / summary_until | Session JSONL header | 压缩较早会话历史 | 是，合入 system prompt |
+| summary / summary_until | Session JSONL header | 压缩较早会话历史 | 是，作为独立 HumanMessage 放在近期原文之前 |
 | MEMORY.md | workspace/memory/MEMORY.md | workspace 级稳定事实、偏好、约定 | 是，每次新读入 system prompt |
 | history.jsonl | workspace/memory/history.jsonl | 长期记忆整理的持久事件队列 | 否 |
 | .memory_cursor | workspace/memory/.memory_cursor | 最后成功消费的事件 ID | 否 |
@@ -416,7 +401,7 @@ HttpApiService 当前提供：
 - POST /v1/messages：同步发送消息并得到最终文本。
 - GET /v1/sessions：只读会话摘要列表；消息数量和预览只统计 is_visible=true 的记录。
 - GET /v1/sessions/{session_id}：返回带 is_visible 标记的 user/assistant 历史，包括隐藏记录；assistant tool call 随所属 assistant 返回，tool result 不暴露。
-- DELETE /v1/sessions/{session_id}：由 AgentLoop 先移除关联 Cron，取消并等待 Agent/Goal turn、Subagent 与压缩任务，再在 session lock 内删除 JSONL；父 turn 退出后会再次清扫可能竞态创建的 Subagent。已排队的 cron/subagent/goal 旧消息会被丢弃，普通用户消息仍可重新使用同一 key。长期记忆与记忆事件历史不随 Session 删除。
+- DELETE /v1/sessions/{session_id}：由 AgentLoop 先移除关联 Cron，取消并等待 Agent/Goal turn、Subagent，再在 session lock 内删除 JSONL；父 turn 退出后会再次清扫可能竞态创建的 Subagent。已排队的 cron/subagent/goal 旧消息会被丢弃，普通用户消息仍可重新使用同一 key。长期记忆与记忆事件历史不随 Session 删除。
 
 认证开启时，除 /health 外的 HTTP 路由使用 Authorization: Bearer token。这是本地静态 token 认证，不是用户体系、角色权限或多租户授权。
 
@@ -533,7 +518,7 @@ HTTP API
 
 - Provider 抽象、OpenAI-compatible 与 Anthropic-compatible 实现、文本流式回调、单次请求超时、有限 transient retry 与统一错误结果。
 - Tool 基础设施、builtin 文件/命令/网络/消息/Goal/Cron/Spawn 工具、MCP 动态工具，以及显式只读工具的有序批次并行。
-- JSONL Session、跨会话关键词检索和原文回查、上下文预算裁剪、Session 摘要、持久化 GoalState。
+- JSONL Session、跨会话关键词检索和原文回查、按调用预算压缩上下文、Session 摘要、持久化 GoalState。
 - MEMORY.md、持久化记忆事件队列与 cursor 恢复。
 - CommandRouter、Goal continuation、Goal 用户输入注入与会话级停止。
 - 可持久化 at/every/Cron 表达式任务、按时区计算与其进入 Agent 的链路。

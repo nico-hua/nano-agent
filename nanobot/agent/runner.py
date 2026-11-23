@@ -13,17 +13,25 @@ from ..providers import (
     BaseMessage,
     HumanMessage,
     LLMProvider,
+    SystemMessage,
     TokenUsage,
     ToolCallRequest,
     ToolMessage,
 )
+from ..session import Session, SessionCompactor
+from ..session.tokens import estimate_messages_tokens, estimate_tools_tokens
 from ..tools import ToolRegistry
+from .context import history_summary_message
 
 logger = logging.getLogger(__name__)
 
 InjectionCallback = Callable[[], Awaitable[Sequence[HumanMessage]]]
 TextDeltaCallback = Callable[[str], Awaitable[None]]
 ToolCallCallback = Callable[[ToolCallRequest], Awaitable[None]]
+
+
+class ContextWindowExceededError(RuntimeError):
+    """The required model request could not be fitted to the configured window."""
 
 
 class AgentRunnerError(RuntimeError):
@@ -43,6 +51,7 @@ class AgentRunSpec:
     injection_callback: InjectionCallback | None = None
     on_delta: TextDeltaCallback | None = None
     on_tool_call: ToolCallCallback | None = None
+    session: Session | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.messages, Sequence) or not all(
@@ -97,10 +106,14 @@ class AgentRunResult:
     token_usage: TokenUsage | None
     stop_reason: str | None
     error: str | None = None
+    history_checkpoint: tuple[str, int] | None = None
 
 
 class AgentRunner:
     """Run provider completions and ordered tool-call batches to a response boundary."""
+
+    def __init__(self, compactor: SessionCompactor | None = None) -> None:
+        self._compactor = compactor
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
         """Run tool-call rounds until a final response or iteration boundary."""
@@ -135,16 +148,51 @@ class AgentRunner:
             len(tools),
             spec.max_iterations,
         )
+
+        summary = spec.session.summary if spec.session else None
+        until = spec.session.summary_until if spec.session else 0
+        checkpoint = None
+        compactor = self._compactor or SessionCompactor(spec.provider)
+        message_budget = compactor.input_token_budget - estimate_tools_tokens(tools)
+        request = list(spec.messages)
+        sent = len(conversation)
         for iteration in range(spec.max_iterations):
+            request = [*request, *conversation[sent:]]
+            sent = len(conversation)
+            if estimate_messages_tokens(request) > message_budget:
+                # Saved messages and live additions share one index space. The
+                # provider-only system prompt and summary never receive indices.
+                if spec.session is None:
+                    sources = tuple(m for m in conversation if not isinstance(m, SystemMessage))
+                else:
+                    current_turn = conversation[len(spec.messages) - 1:]
+                    sources = (*spec.session.messages, *current_turn)
+                system = [m for m in request if isinstance(m, SystemMessage)]
+                available = message_budget - estimate_messages_tokens(system)
+                updated = await compactor.compact_for_request(
+                    sources, previous=summary, start=until, available_tokens=available,
+                )
+                if updated is None:
+                    raise ContextWindowExceededError("Unable to summarize the request")
+                summary, until = updated
+                request = [*system, history_summary_message(summary), *sources[until:]]
+                if estimate_messages_tokens(request) > message_budget:
+                    raise ContextWindowExceededError("Compacted messages exceed the context window")
+                # Persist only summaries of previously completed turns.
+                if spec.session and (
+                    until == len(spec.session.messages)
+                    or (until < len(spec.session.messages) and isinstance(sources[until], HumanMessage))
+                ):
+                    checkpoint = updated
             logger.debug("Requesting provider completion (iteration=%d)", iteration + 1)
             response = await (
                 spec.provider.stream(
-                    conversation,
+                    request,
                     tools=tools or None,
                     on_delta=spec.on_delta,
                 )
                 if streaming
-                else spec.provider.complete(conversation, tools=tools or None)
+                else spec.provider.complete(request, tools=tools or None)
             )
             token_usage = _combine_token_usage(token_usage, response.usage)
             if response.error is not None:
@@ -179,6 +227,7 @@ class AgentRunner:
                     tools_used=tuple(tools_used),
                     token_usage=token_usage,
                     stop_reason=response.finish_reason,
+                    history_checkpoint=checkpoint,
                 )
 
             conversation.append(
@@ -211,6 +260,7 @@ class AgentRunner:
             tools_used=tuple(tools_used),
             token_usage=token_usage,
             stop_reason="max_iterations",
+            history_checkpoint=checkpoint,
         )
 
 

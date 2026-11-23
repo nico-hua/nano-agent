@@ -94,10 +94,13 @@ class Application:
         self._tool_registry = ToolRegistry()
         self._tool_loader = tool_loader if tool_loader is not None else ToolLoader()
         self._provider = provider_factory(config.provider)
-        self._context_builder = ContextBuilder(
-            config.workspace,
-            config.context_window_tokens,
-            config.provider.default_max_tokens,
+        self._context_builder = ContextBuilder(config.workspace)
+        input_budget = config.context_window_tokens - config.provider.default_max_tokens
+        self._session_compactor = SessionCompactor(
+            self._provider,
+            input_token_budget=input_budget,
+            token_threshold=config.compaction_threshold_tokens,
+            recent_token_budget=config.compaction_recent_tokens,
         )
         self._session_manager = SessionManager(config.workspace)
         # The subagent context intentionally has no manager, so a future
@@ -109,7 +112,7 @@ class Application:
             web_search_tavily_api_key=config.tools.web_search.tavily_api_key,
         )
         self._subagent_manager = SubagentManager(
-            AgentRunner(),
+            AgentRunner(self._session_compactor),
             self._provider,
             self._context_builder,
             subagent_tool_context,
@@ -125,11 +128,6 @@ class Application:
                 message_bus=self._message_bus,
             ),
         )
-        self._session_compactor = SessionCompactor(
-            self._provider,
-            token_threshold=config.compaction_threshold_tokens,
-            recent_token_budget=config.compaction_recent_tokens,
-        )
         self._memory_store = MemoryStore(config.workspace)
         self._memory_consolidator = MemoryConsolidator(
             self._provider,
@@ -140,7 +138,7 @@ class Application:
             config.mcp_servers,
         )
         self._agent_loop = agent_loop_factory(
-            AgentRunner(),
+            AgentRunner(self._session_compactor),
             self._provider,
             self._tool_registry,
             self._session_manager,

@@ -16,6 +16,7 @@ from ..agent import (
     AgentRunResult,
     AgentRunSpec,
     ContextBuilder,
+    ContextWindowExceededError,
 )
 from ..bus import InboundMessage, MessageBus
 from ..providers import HumanMessage, LLMProvider, SystemMessage
@@ -333,6 +334,8 @@ class SubagentManager:
                     result = await self._runner.run(spec)
         except asyncio.CancelledError:
             raise
+        except ContextWindowExceededError:
+            return SubagentRunResult(error="Subagent task exceeds the model context window.")
         except AgentRunnerError:
             logger.warning("Subagent run did not complete")
             return SubagentRunResult(error="Subagent could not complete the task.")

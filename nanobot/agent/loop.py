@@ -23,8 +23,13 @@ from ..session import Session, SessionCompactor, SessionManager
 from ..session.goals import build_goal_continuation_content
 from ..tools import RequestContext, ToolRegistry, bind_request_context
 from .commands import CommandInvocation, CommandRouter
-from .context import ContextBuilder, ContextWindowExceededError
-from .runner import AgentRunner, AgentRunResult, AgentRunSpec
+from .context import ContextBuilder
+from .runner import (
+    AgentRunner,
+    AgentRunResult,
+    AgentRunSpec,
+    ContextWindowExceededError,
+)
 
 if TYPE_CHECKING:
     from ..cron import CronService
@@ -33,7 +38,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _CONTEXT_WINDOW_EXCEEDED_MESSAGE = (
-    "当前会话的系统提示词、摘要或当前消息已超过模型上下文窗口，"
+    "当前请求超过模型上下文窗口，未能生成符合预算的上下文。"
     "请新开会话或缩短消息后重试。"
 )
 _PROCESSING_ERROR_MESSAGE = "处理消息时发生错误，请稍后重试。"
@@ -124,7 +129,6 @@ class AgentLoop:
         self._session_manager = session_manager
         self._context_builder = context_builder
         self._message_bus = message_bus
-        self._session_compactor = session_compactor
         self._memory_events = (
             MemoryEventConsumer(memory_store, memory_consolidator)
             if memory_store is not None and memory_consolidator is not None
@@ -155,8 +159,6 @@ class AgentLoop:
         # 目标运行期间的普通用户输入只由当前 Runner 在安全检查点注入。
         self._pending_user_messages: dict[str, asyncio.Queue[InboundMessage]] = {}
         self._inbound_tasks: set[asyncio.Task[None]] = set()
-        self._compaction_tasks: set[asyncio.Task[None]] = set()
-        self._compaction_sessions: dict[asyncio.Task[None], str] = {}
         self._deleting_sessions: set[str] = set()
         self._deleted_sessions: set[str] = set()
         self._closed = False
@@ -278,14 +280,6 @@ class AgentLoop:
             if self._subagent_manager is not None:
                 await self._subagent_manager.cancel_session(session_key)
 
-            compaction_tasks = tuple(
-                task
-                for task, owner in self._compaction_sessions.items()
-                if owner == session_key and not task.done() and task is not current_task
-            )
-            for task in compaction_tasks:
-                task.cancel()
-
             tasks_to_await = set(turn_tasks)
             if (
                 goal_task is not None
@@ -293,7 +287,6 @@ class AgentLoop:
                 and goal_task is not current_task
             ):
                 tasks_to_await.add(goal_task)
-            tasks_to_await.update(compaction_tasks)
             if tasks_to_await:
                 await asyncio.gather(*tasks_to_await, return_exceptions=True)
             if self._subagent_manager is not None and (turn_tasks or goal_task):
@@ -318,9 +311,7 @@ class AgentLoop:
         self._closed = True
         if self._subagent_manager is not None:
             await self._subagent_manager.close()
-        # Application 关闭时统一取消请求、压缩和记忆消费者，避免遗留后台任务。
-        tasks = set(self._compaction_tasks)
-        tasks.update(self._inbound_tasks)
+        tasks = set(self._inbound_tasks)
         for turn_tasks in self._active_turn_tasks.values():
             tasks.update(turn_tasks)
         tasks.update(self._goal_turn_tasks.values())
@@ -337,19 +328,8 @@ class AgentLoop:
         self._streaming_turns.clear()
         self._goal_turn_tasks.clear()
         self._pending_user_messages.clear()
-        self._compaction_sessions.clear()
         self._deleting_sessions.clear()
         self._deleted_sessions.clear()
-
-    async def wait_for_compactions(self) -> None:
-        """Wait until currently scheduled background compactions have completed."""
-
-        while self._compaction_tasks:
-            tasks = tuple(self._compaction_tasks)
-            await asyncio.gather(*tasks, return_exceptions=True)
-            self._compaction_tasks.difference_update(
-                task for task in tasks if task.done()
-            )
 
     async def wait_for_memory_consolidations(self) -> None:
         """Wait until the currently scheduled memory event consumer finishes."""
@@ -521,28 +501,13 @@ class AgentLoop:
                 session = self._session_manager.get_or_create(session_key)
                 history = _without_system_messages(session.messages)
                 current_message = HumanMessage(content=inbound.content)
-                blocked_tool_names = _blocked_tool_names(is_goal_turn)
-                available_tools = tuple(
-                    tool
-                    for tool in self._tool_registry.tools
-                    if tool.name not in blocked_tool_names
+                if history != session.messages:
+                    # Legacy system messages change source positions when removed.
+                    session = replace(session, messages=history, summary=None, summary_until=0)
+                request_messages = self._context_builder.build_request_messages(
+                    history[session.summary_until:], current_message, summary=session.summary,
                 )
-                try:
-                    request_messages = self._context_builder.build_request_messages(
-                        history,
-                        current_message,
-                        summary=session.summary,
-                        summary_until=session.summary_until,
-                        tools=available_tools,
-                    )
-                except ContextWindowExceededError:
-                    logger.warning("Agent request exceeds the configured context window")
-                    if is_goal_turn:
-                        self._finish_active_goal(session_key, "failed")
-                    return _outbound_message(
-                        inbound,
-                        _CONTEXT_WINDOW_EXCEEDED_MESSAGE,
-                    )
+                blocked_tool_names = _blocked_tool_names(is_goal_turn)
 
                 message_bus = self._message_bus
                 on_delta = None
@@ -585,6 +550,7 @@ class AgentLoop:
 
                 spec = AgentRunSpec(
                     messages=request_messages,
+                    session=session,
                     provider=self._provider,
                     tool_registry=self._tool_registry,
                     max_iterations=self._max_iterations,
@@ -681,6 +647,17 @@ class AgentLoop:
                     )
                     return None
                 return _outbound_message(inbound, result.content or "")
+        except ContextWindowExceededError:
+            logger.warning("Agent request could not fit the configured context window")
+            if is_goal_turn:
+                self._finish_active_goal(session_key, "failed")
+            if is_streaming and self._message_bus is not None:
+                await self._message_bus.publish_outbound(_outbound_message(
+                    inbound, _CONTEXT_WINDOW_EXCEEDED_MESSAGE,
+                    metadata={**inbound.metadata, "event": "error"},
+                ))
+                return None
+            return _outbound_message(inbound, _CONTEXT_WINDOW_EXCEEDED_MESSAGE)
         except asyncio.CancelledError:
             if is_goal_turn:
                 self._finish_active_goal(session_key, "failed")
@@ -715,9 +692,13 @@ class AgentLoop:
             completed_messages,
             hide_intermediate_messages=hide_intermediate_messages,
         )
+        session = self._session_manager.get_or_create(session_key)
+        if session.messages != history:
+            session = replace(session, summary=None, summary_until=0)
+        if result.history_checkpoint is not None:
+            session = session.with_summary(*result.history_checkpoint)
         session = (
-            self._session_manager.get_or_create(session_key)
-            .with_messages((*history, *turn_messages))
+            session.with_messages((*history, *turn_messages))
             .with_last_request_at(datetime.now(UTC))
         )
         if is_goal_turn and result.stop_reason != "max_iterations":
@@ -735,39 +716,7 @@ class AgentLoop:
                 session_key,
                 turn_messages,
             )
-        # Compaction is deliberately asynchronous so it cannot delay a reply.
-        self._schedule_compaction(session_key)
         return saved_session
-
-    def _schedule_compaction(self, session_key: str) -> None:
-        if (
-            self._session_compactor is None
-            or self._closed
-            or session_key in self._deleting_sessions
-        ):
-            return
-        task = asyncio.create_task(self._compact_session(session_key))
-        self._compaction_tasks.add(task)
-        self._compaction_sessions[task] = session_key
-        task.add_done_callback(self._compaction_task_finished)
-
-    def _compaction_task_finished(self, task: asyncio.Task[None]) -> None:
-        self._compaction_tasks.discard(task)
-        self._compaction_sessions.pop(task, None)
-
-    async def _compact_session(self, session_key: str) -> None:
-        try:
-            async with self._lock_for(session_key):
-                if session_key in self._deleting_sessions:
-                    return
-                session = self._session_manager.get_or_create(session_key)
-                compacted_session = await self._session_compactor.compact(session)
-                if compacted_session is not session:
-                    self._session_manager.save(compacted_session)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Background session compaction failed")
 
     def _lock_for(self, session_key: str) -> asyncio.Lock:
         lock = self._session_locks.get(session_key)

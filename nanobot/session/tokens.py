@@ -6,7 +6,11 @@ import json
 from collections.abc import Sequence
 
 from ..providers import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from ..tools import Tool
 
+DEFAULT_CONTEXT_WINDOW_TOKENS = 128_000
+DEFAULT_OUTPUT_TOKEN_RESERVE = 1_024
+DEFAULT_INPUT_TOKEN_BUDGET = DEFAULT_CONTEXT_WINDOW_TOKENS - DEFAULT_OUTPUT_TOKEN_RESERVE
 _MESSAGE_OVERHEAD_TOKENS = 4
 
 
@@ -80,3 +84,29 @@ def _validate_messages(messages: Sequence[BaseMessage]) -> None:
         isinstance(message, BaseMessage) for message in messages
     ):
         raise TypeError("messages must be a sequence of BaseMessage instances")
+
+
+def estimate_tools_tokens(tools: Sequence[Tool]) -> int:
+    """Return a stable approximate token count for registered tool definitions."""
+
+    if not all(isinstance(tool, Tool) for tool in tools):
+        raise TypeError("tools must contain Tool instances")
+    schemas = [
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.parameters_schema,
+        }
+        for tool in tools
+    ]
+    if not schemas:
+        return 0
+    return _MESSAGE_OVERHEAD_TOKENS * len(schemas) + _estimate_text_tokens(
+        json.dumps(
+            schemas,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+    )

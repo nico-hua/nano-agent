@@ -18,7 +18,6 @@ from nanobot.agent import (
     AgentRunResult,
     AgentRunSpec,
     ContextBuilder,
-    estimate_messages_tokens,
 )
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
 from nanobot.memory import MemoryConsolidator, MemoryStore
@@ -40,7 +39,6 @@ from nanobot.tools import (
     ToolResult,
     get_request_context,
 )
-
 
 class ScriptedProvider(LLMProvider):
     def __init__(self, responses: Sequence[LLMResponse]) -> None:
@@ -88,58 +86,6 @@ class BlockingProvider(LLMProvider):
         except asyncio.CancelledError:
             self.cancelled.set()
             raise
-
-    async def stream(
-        self,
-        messages: Sequence[BaseMessage],
-        tools: Sequence[Tool] | None = None,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        on_delta: Callable[[str], Awaitable[None]] | None = None,
-    ) -> LLMResponse:
-        raise AssertionError("AgentLoop must not use streaming")
-
-
-class BackgroundCompactionProvider(LLMProvider):
-    def __init__(
-        self,
-        responses: Sequence[LLMResponse],
-        summary_response: LLMResponse | Exception,
-        *,
-        block_summary: bool = False,
-    ) -> None:
-        self._responses = iter(responses)
-        self._summary_response = summary_response
-        self.complete_calls: list[tuple[BaseMessage, ...]] = []
-        self.summary_started = asyncio.Event()
-        self.summary_finished = asyncio.Event()
-        self._summary_release = asyncio.Event()
-        if not block_summary:
-            self._summary_release.set()
-
-    async def complete(
-        self,
-        messages: Sequence[BaseMessage],
-        tools: Sequence[Tool] | None = None,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-    ) -> LLMResponse:
-        del tools, max_tokens, temperature
-        request = tuple(messages)
-        self.complete_calls.append(request)
-        if _is_summary_request(request):
-            self.summary_started.set()
-            try:
-                await self._summary_release.wait()
-                if isinstance(self._summary_response, Exception):
-                    raise self._summary_response
-                return self._summary_response
-            finally:
-                self.summary_finished.set()
-        return next(self._responses)
-
-    def release_summary(self) -> None:
-        self._summary_release.set()
 
     async def stream(
         self,
@@ -270,7 +216,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             ScriptedProvider(()),
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         self.assertFalse(await loop.delete_session("missing-session"))
@@ -292,7 +238,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
         active_turn = asyncio.create_task(
             _dispatch(loop, "Pending question.", "test", "chat-1", "session-1")
@@ -319,7 +265,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             ScriptedProvider(()),
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             subagent_manager=subagent_manager,
             cron_service=cron_service,
         )
@@ -329,45 +275,6 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         cron_service.remove_session_tasks.assert_called_once_with("session-1")
         subagent_manager.cancel_session.assert_awaited_once_with("session-1")
 
-    async def test_delete_session_cancels_its_background_compaction(self) -> None:
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Old answer."),
-        )
-        current_turn = (
-            HumanMessage(content="Current question."),
-            AIMessage(content="Current answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(old_turn)
-        )
-        provider = BackgroundCompactionProvider(
-            (LLMResponse(content="Current answer."),),
-            LLMResponse(content="unused"),
-            block_summary=True,
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens(current_turn) + 1,
-            recent_token_budget=estimate_messages_tokens(current_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(self._temporary_directory.name),
-            session_compactor=compactor,
-        )
-        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-        await asyncio.wait_for(provider.summary_started.wait(), timeout=1)
-
-        self.assertTrue(await loop.delete_session("session-1"))
-
-        self.assertTrue(provider.summary_finished.is_set())
-        self.assertIsNone(self._sessions.get("session-1"))
-        self.assertFalse(loop._compaction_tasks)
-
     async def test_deleted_session_ignores_stale_background_messages_until_user_reopens_it(self) -> None:
         self._sessions.save(self._sessions.get_or_create("session-1"))
         provider = ScriptedProvider((LLMResponse(content="Reopened."),))
@@ -376,7 +283,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
         self.assertTrue(await loop.delete_session("session-1"))
 
@@ -425,7 +332,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "First question.", "test", "chat-1", "session-1")
@@ -518,7 +425,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             ScriptedProvider((LLMResponse(content="First answer."),)),
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
         await _dispatch(first_loop, "First question.", "test", "chat-1", "session-1")
 
@@ -528,7 +435,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             SessionManager(self._temporary_directory.name),
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
         await _dispatch(recreated_loop, "Second question.", "test", "chat-1", "session-1")
 
@@ -559,7 +466,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry((EchoTool(),)),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "Echo hello.", "test", "chat-1", "session-1")
@@ -592,7 +499,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry((tool,)),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(
@@ -624,7 +531,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "First question.", "alpha", "chat-1", "")
@@ -660,7 +567,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             ScriptedProvider(()),
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         with self.assertRaisesRegex(AgentRunnerError, "model unavailable"):
@@ -695,7 +602,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         response = await _dispatch(
@@ -718,7 +625,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         provider = ScriptedProvider((LLMResponse(content="First."), LLMResponse(content="Second.")))
         loop = AgentLoop(
             AgentRunner(), provider, ToolRegistry(), self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "First question.", "test", "chat-1", "session-1")
@@ -740,7 +647,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         for source in sources:
@@ -778,7 +685,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "New question.", "test", "chat-1", "session-1")
@@ -799,403 +706,6 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
                 AIMessage(content="New answer."),
             ),
         )
-
-    async def test_trims_only_the_llm_context_and_preserves_complete_session_history(self) -> None:
-        older_turn = (
-            HumanMessage(content="Older question " * 30),
-            AIMessage(content="Older answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(
-                (*older_turn, *recent_turn)
-            )
-        )
-        provider = ScriptedProvider((LLMResponse(content="Current answer."),))
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(
-                self._temporary_directory.name,
-                estimate_messages_tokens(recent_turn),
-            ),
-        )
-
-        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-
-        self.assertEqual(
-            provider.complete_calls[0],
-            (
-                _system_message(self._temporary_directory.name),
-                *recent_turn,
-                HumanMessage(content="Current question."),
-            ),
-        )
-        self.assertEqual(
-            self._sessions.get_or_create("session-1").messages,
-            (
-                *older_turn,
-                *recent_turn,
-                HumanMessage(content="Current question."),
-                AIMessage(content="Current answer."),
-            ),
-        )
-
-    async def test_recreated_session_manager_still_trims_restored_history(self) -> None:
-        older_turn = (
-            HumanMessage(content="Older question " * 30),
-            AIMessage(content="Older answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(
-                (*older_turn, *recent_turn)
-            )
-        )
-        provider = ScriptedProvider((LLMResponse(content="Current answer."),))
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            SessionManager(self._temporary_directory.name),
-            _context_builder(
-                self._temporary_directory.name,
-                estimate_messages_tokens(recent_turn),
-            ),
-        )
-
-        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-
-        self.assertEqual(provider.complete_calls[0][1:-1], recent_turn)
-        self.assertEqual(
-            provider.complete_calls[0].count(HumanMessage(content="Current question.")),
-            1,
-        )
-
-    async def test_compaction_preserves_full_history_and_uses_summary_on_the_next_turn(self) -> None:
-        request = ToolCallRequest(
-            id="call-1",
-            name="echo",
-            arguments={"value": "old"},
-        )
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Calling echo.", tool_calls=(request,)),
-            ToolMessage(content="echo: old", tool_call_id="call-1"),
-            AIMessage(content="Old answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        current_turn = (
-            HumanMessage(content="Current question."),
-            AIMessage(content="Current answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(
-                (*old_turn, *recent_turn)
-            )
-        )
-        provider = ScriptedProvider(
-            (
-                LLMResponse(content="Current answer."),
-                LLMResponse(content="Earlier turns were summarized."),
-                LLMResponse(content="Next answer."),
-            )
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens((*old_turn, *recent_turn)),
-            recent_token_budget=estimate_messages_tokens(current_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry((EchoTool(),)),
-            self._sessions,
-            _context_builder(self._temporary_directory.name),
-            session_compactor=compactor,
-        )
-
-        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-        await loop.wait_for_compactions()
-        await _dispatch(loop, "Next question.", "test", "chat-1", "session-1")
-
-        session = self._sessions.get_or_create("session-1")
-        self.assertEqual(
-            session.messages,
-            (
-                *old_turn,
-                *recent_turn,
-                *current_turn,
-                HumanMessage(content="Next question."),
-                AIMessage(content="Next answer."),
-            ),
-        )
-        self.assertEqual(session.summary, "Earlier turns were summarized.")
-        self.assertEqual(session.summary_until, len((*old_turn, *recent_turn)))
-        self.assertEqual(
-            provider.complete_calls[2],
-            (
-                SystemMessage(
-                    content=(
-                        f"{_system_message(self._temporary_directory.name).content}"
-                        "\n\n## Conversation Summary\n\nEarlier turns were summarized."
-                    )
-                ),
-                *current_turn,
-                HumanMessage(content="Next question."),
-            ),
-        )
-
-    async def test_request_uses_history_clipping_before_background_compaction(self) -> None:
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Old answer."),
-        )
-        recent_turn = (
-            HumanMessage(content="Recent question."),
-            AIMessage(content="Recent answer."),
-        )
-        current_turn = (
-            HumanMessage(content="Current question."),
-            AIMessage(content="Current answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(
-                (*old_turn, *recent_turn)
-            )
-        )
-        provider = ScriptedProvider(
-            (
-                LLMResponse(content="Current answer."),
-                LLMResponse(content="The old turn was summarized."),
-            )
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens((*recent_turn, *current_turn)),
-            recent_token_budget=estimate_messages_tokens(current_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(
-                self._temporary_directory.name,
-                estimate_messages_tokens(recent_turn),
-            ),
-            session_compactor=compactor,
-        )
-
-        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-
-        self.assertEqual(
-            provider.complete_calls[0],
-            (
-                _system_message(self._temporary_directory.name),
-                *recent_turn,
-                HumanMessage(content="Current question."),
-            ),
-        )
-        self.assertEqual(len(provider.complete_calls), 1)
-        await loop.wait_for_compactions()
-        session = self._sessions.get_or_create("session-1")
-        self.assertEqual(session.messages, (*old_turn, *recent_turn, *current_turn))
-        self.assertEqual(session.summary, "The old turn was summarized.")
-        self.assertEqual(session.summary_until, len((*old_turn, *recent_turn)))
-
-    async def test_saves_completed_messages_before_starting_background_compaction(self) -> None:
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Old answer."),
-        )
-        current_turn = (
-            HumanMessage(content="Current question."),
-            AIMessage(content="Current answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(old_turn)
-        )
-        provider = BackgroundCompactionProvider(
-            (LLMResponse(content="Current answer."),),
-            LLMResponse(content="The old turn was summarized."),
-            block_summary=True,
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens(current_turn) + 1,
-            recent_token_budget=estimate_messages_tokens(current_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(self._temporary_directory.name),
-            session_compactor=compactor,
-        )
-
-        result = await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-
-        self.assertEqual(result.content, "Current answer.")
-        self.assertEqual(len(provider.complete_calls), 1)
-        self.assertEqual(
-            self._sessions.get_or_create("session-1").messages,
-            (*old_turn, *current_turn),
-        )
-        await asyncio.wait_for(provider.summary_started.wait(), timeout=1)
-        self.assertIsNone(self._sessions.get_or_create("session-1").summary)
-
-        provider.release_summary()
-        await asyncio.wait_for(provider.summary_finished.wait(), timeout=1)
-        await loop.wait_for_compactions()
-
-        session = self._sessions.get_or_create("session-1")
-        self.assertEqual(session.summary, "The old turn was summarized.")
-        self.assertEqual(session.summary_until, len(old_turn))
-
-    async def test_background_compaction_failure_keeps_saved_session_data(self) -> None:
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Old answer."),
-        )
-        current_turn = (
-            HumanMessage(content="Current question."),
-            AIMessage(content="Current answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(old_turn)
-        )
-        provider = BackgroundCompactionProvider(
-            (LLMResponse(content="Current answer."),),
-            RuntimeError("summary unavailable"),
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens(current_turn) + 1,
-            recent_token_budget=estimate_messages_tokens(current_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(self._temporary_directory.name),
-            session_compactor=compactor,
-        )
-
-        result = await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-        await loop.wait_for_compactions()
-
-        session = self._sessions.get_or_create("session-1")
-        self.assertEqual(result.content, "Current answer.")
-        self.assertEqual(session.messages, (*old_turn, *current_turn))
-        self.assertIsNone(session.summary)
-        self.assertEqual(session.summary_until, 0)
-
-    async def test_session_lock_prevents_background_compaction_from_overwriting_newer_messages(self) -> None:
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Old answer."),
-        )
-        first_turn = (
-            HumanMessage(content="First question."),
-            AIMessage(content="First answer."),
-        )
-        second_turn = (
-            HumanMessage(content="Second question."),
-            AIMessage(content="Second answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(old_turn)
-        )
-        provider = BackgroundCompactionProvider(
-            (
-                LLMResponse(content="First answer."),
-                LLMResponse(content="Second answer."),
-            ),
-            LLMResponse(content="The old turn was summarized."),
-            block_summary=True,
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens((*first_turn, *second_turn)) + 1,
-            recent_token_budget=estimate_messages_tokens(first_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(self._temporary_directory.name),
-            session_compactor=compactor,
-        )
-
-        await _dispatch(loop, "First question.", "test", "chat-1", "session-1")
-        await asyncio.wait_for(provider.summary_started.wait(), timeout=1)
-        second_run = asyncio.create_task(
-            _dispatch(loop, "Second question.", "test", "chat-1", "session-1")
-        )
-        await asyncio.sleep(0)
-        self.assertFalse(second_run.done())
-
-        provider.release_summary()
-        await second_run
-        await loop.wait_for_compactions()
-
-        session = self._sessions.get_or_create("session-1")
-        self.assertEqual(session.messages, (*old_turn, *first_turn, *second_turn))
-        self.assertEqual(session.summary, "The old turn was summarized.")
-        self.assertEqual(session.summary_until, len(old_turn))
-
-    async def test_close_cancels_pending_background_compaction(self) -> None:
-        old_turn = (
-            HumanMessage(content="Old question " * 40),
-            AIMessage(content="Old answer."),
-        )
-        current_turn = (
-            HumanMessage(content="Current question."),
-            AIMessage(content="Current answer."),
-        )
-        self._sessions.save(
-            self._sessions.get_or_create("session-1").with_messages(old_turn)
-        )
-        provider = BackgroundCompactionProvider(
-            (LLMResponse(content="Current answer."),),
-            LLMResponse(content="unused"),
-            block_summary=True,
-        )
-        compactor = SessionCompactor(
-            provider,
-            token_threshold=estimate_messages_tokens(current_turn) + 1,
-            recent_token_budget=estimate_messages_tokens(current_turn),
-        )
-        loop = AgentLoop(
-            AgentRunner(),
-            provider,
-            ToolRegistry(),
-            self._sessions,
-            _context_builder(self._temporary_directory.name),
-            session_compactor=compactor,
-        )
-
-        await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
-        await asyncio.wait_for(provider.summary_started.wait(), timeout=1)
-        await loop.close()
-
-        self.assertTrue(provider.summary_finished.is_set())
-        self.assertIsNone(self._sessions.get_or_create("session-1").summary)
 
     async def test_schedules_memory_after_saving_a_complete_snapshot_without_blocking(self) -> None:
         previous_messages = (
@@ -1218,7 +728,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             memory_store=store,
             memory_consolidator=MemoryConsolidator(provider, store),
         )
@@ -1274,7 +784,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             memory_store=store,
             memory_consolidator=MemoryConsolidator(
                 provider,
@@ -1300,7 +810,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             memory_store=store,
             memory_consolidator=MemoryConsolidator(provider, store),
         )
@@ -1335,7 +845,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             memory_store=store,
             memory_consolidator=MemoryConsolidator(
                 provider,
@@ -1374,7 +884,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             memory_store=store,
             memory_consolidator=MemoryConsolidator(provider, store),
         )
@@ -1406,7 +916,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
             message_bus=MessageBus(),
             memory_store=store,
             memory_consolidator=MemoryConsolidator(provider, store),
@@ -1435,7 +945,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry(),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "Initial question.", "test", "chat-1", "session-1")
@@ -1480,7 +990,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry((EchoTool(),)),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "Initial question.", "test", "chat-1", "session-1")
@@ -1526,7 +1036,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             provider,
             ToolRegistry((EchoTool(),)),
             self._sessions,
-            _context_builder(self._temporary_directory.name),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         await _dispatch(loop, "Initial question.", "test", "chat-1", "session-1")
@@ -1557,15 +1067,11 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
     async def test_returns_a_user_facing_message_when_required_context_exceeds_the_window(self) -> None:
         provider = ScriptedProvider(())
         loop = AgentLoop(
-            AgentRunner(),
+            AgentRunner(SessionCompactor(provider, input_token_budget=1)),
             provider,
             ToolRegistry(),
             self._sessions,
-            ContextBuilder(
-                self._temporary_directory.name,
-                context_window_tokens=1,
-                output_token_reserve=0,
-            ),
+            ContextBuilder(self._temporary_directory.name),
         )
 
         result = await _dispatch(loop, "Current question.", "test", "chat-1", "session-1")
@@ -1577,15 +1083,6 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
 def _system_message(workspace: str) -> SystemMessage:
     return SystemMessage(content=ContextBuilder(workspace).build_system_prompt())
-
-
-def _context_builder(workspace: str, history_budget: int = 64_000) -> ContextBuilder:
-    system_message = SystemMessage(content=ContextBuilder(workspace).build_system_prompt())
-    return ContextBuilder(
-        workspace,
-        context_window_tokens=estimate_messages_tokens((system_message,)) + history_budget + 128,
-        output_token_reserve=0,
-    )
 
 
 async def _dispatch(
@@ -1612,12 +1109,6 @@ async def _dispatch(
             raise AssertionError("/stop must parse as a command")
         return await loop._run_stop_command(inbound, invocation)
     return await loop._dispatch_non_stop_message(inbound, invocation)
-
-
-def _is_summary_request(messages: tuple[BaseMessage, ...]) -> bool:
-    return bool(messages) and isinstance(messages[0], SystemMessage) and messages[0].content.startswith(
-        "Summarize this conversation"
-    )
 
 
 def _is_memory_request(messages: tuple[BaseMessage, ...]) -> bool:

@@ -11,7 +11,7 @@ Nano Agent 是一个参考开源项目 Nanobot 从零复现的轻量级 AI Agent
 - 支持文本流式与非流式调用的 AgentRunner 工具调用循环，以及基于 `asyncio.Queue` 的 MessageBus；流式工具执行前可单独通知调用方工具名称和参数。同一批次内，相邻且可并行的工具调用会并发执行，例如 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch`。串行调用等待前一段执行结束，返回后才执行后续调用。工具结果按模型请求顺序写回。
 - QQ 文本 Channel、最小 WebSocket Channel，以及独立的 React + TypeScript Web UI；均复用 ChannelManager、Application 生命周期和 `python -m nanobot` CLI 入口。WebSocket 默认仅监听本机，连接后经现有 `MessageBus` 与 AgentLoop 通信；Web UI 默认使用中文，可在右上角切换中英文，并可查看、切换、新建和删除本地持久化会话、停止当前 session 的流式生成。
 - 基于 `aiohttp` 的最小本地 HTTP API：`GET /health`、`POST /v1/messages`、`GET /v1/sessions`、`GET /v1/sessions/{session_id}` 与 `DELETE /v1/sessions/{session_id}`。消息请求和删除请求经 `AgentLoop` 协调；会话读取接口经 `SessionManager` 返回带有 `is_visible` 展示标记的 user/assistant 历史，不暴露 system prompt 或 tool result。
-- workspace 下的 JSONL Session 持久化、请求侧上下文裁剪和 Session 摘要压缩。每轮从 workspace 重建系统提示词，先放工作区指令与 Skills，再追加最新长期记忆和会话摘要。Session 头部记录最近成功请求时间 `last_request_at`。每条消息携带默认值为 `true` 的 `is_visible` 展示标记，旧记录缺少该字段时仍按可见处理；标记只控制 Web UI 展示，不会从完整会话上下文中删除消息。当前 turn 仅在 `AgentRunner` 成功返回完整结果后原子保存，失败或取消不会留下半截历史。对于 `source=cron` 和异步 `source=subagent` 的内部 turn，本轮只有最后一条 `AIMessage` 可见，其余新增消息隐藏；其他来源默认全部展示。
+- workspace 下的 JSONL Session 持久化、逐次模型调用的预算检查和按需摘要压缩。每轮从 workspace 重建系统提示词，先放工作区指令与 Skills，再追加最新长期记忆。会话摘要以独立的 `HumanMessage` 放在系统提示词之后，随后是近期原文和本轮用户消息。Session 头部记录最近成功请求时间 `last_request_at`。每条消息携带默认值为 `true` 的 `is_visible` 展示标记，旧记录缺少该字段时仍按可见处理；标记只控制 Web UI 展示，不会从完整会话上下文中删除消息。当前 turn 仅在 `AgentRunner` 成功返回完整结果后原子保存，失败或取消不会留下半截历史。对于 `source=cron` 和异步 `source=subagent` 的内部 turn，本轮只有最后一条 `AIMessage` 可见，其余新增消息隐藏；其他来源默认全部展示。
 - Session 级持续目标：`GoalState` 独立持久化；`/goal <objective>` 或普通模式下的 `create_goal` 工具保存目标后，都会在同一 session 中投递一次基于当前上下文的目标 turn。`create_goal` 仅负责创建与调度确认，实际目标执行由后续内部消息完成；目标模式中的 `update_goal` 可更新或停止当前目标。目标达到 `max_iterations` 时，会先持久化完整工具批次，再通过内部 continuation 继续执行，并受每个目标的续跑上限约束；中间结果不会发送给用户。目标仅在返回非空文本时标记为 `completed`，空结果和执行异常标记为 `failed`；运行期间的普通用户输入按 session 合并并在工具调用安全点注入当前 Runner，不会并发启动第二个 Runner；`/goal status` 可查询状态，`/goal stop` 会取消 active goal 及其正在执行的目标 turn，进行中的目标会阻止 `/new` 重置会话。
 - 长期记忆：`MEMORY.md` 读取、LLM 整理，以及由 `history.jsonl` 和 `.memory_cursor` 驱动的可恢复后台事件队列。每个成功持久化的 Agent turn 都会进入该队列。
 - workspace Skills：静态 Skill 发现、always-active 指令、`$skill-name` 当前请求激活和环境依赖可用性检查。
@@ -94,7 +94,7 @@ Invoke-RestMethod http://127.0.0.1:8000/v1/messages `
   -Body '{"session_id":"example-session","content":"你好"}'
 ```
 
-`POST /v1/messages` 返回 `session_id` 和最终 `content`。`session_id` 会作为稳定的会话标识；请求超时、输入校验和 Agent 处理失败会返回对应的 JSON HTTP 错误。`GET /v1/sessions` 返回按最近更新时间排序的 session 摘要（只统计 `is_visible` 为真的消息）；`GET /v1/sessions/{session_id}` 返回该 session 的 user/assistant 历史及 assistant 发起的 tool call，每条记录带有 `is_visible` 展示标记，不暴露 system prompt 或 tool result。`DELETE /v1/sessions/{session_id}` 会先移除关联 Cron，并取消、等待 Agent/Goal turn、后台 Subagent 与压缩任务，再删除 Session JSONL；长期记忆文件和记忆事件历史不随会话删除。
+`POST /v1/messages` 返回 `session_id` 和最终 `content`。`session_id` 会作为稳定的会话标识；请求超时、输入校验和 Agent 处理失败会返回对应的 JSON HTTP 错误。`GET /v1/sessions` 返回按最近更新时间排序的 session 摘要（只统计 `is_visible` 为真的消息）；`GET /v1/sessions/{session_id}` 返回该 session 的 user/assistant 历史及 assistant 发起的 tool call，每条记录带有 `is_visible` 展示标记，不暴露 system prompt 或 tool result。`DELETE /v1/sessions/{session_id}` 会先移除关联 Cron，并取消、等待 Agent/Goal turn、后台 Subagent，再删除 Session JSONL；长期记忆文件和记忆事件历史不随会话删除。
 
 当 `channel.default` 为 `websocket` 时，可连接 `ws://127.0.0.1:8765/ws`。连接成功会收到 `ready` 事件；客户端可发送：
 
