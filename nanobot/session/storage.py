@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import os
+import stat
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from datetime import datetime
 from pathlib import Path
+from threading import Event, Lock
 from typing import Any
 
 from ..providers import (
@@ -22,12 +26,16 @@ from ..providers import (
 from .goals import GoalState
 from .models import Session, _validate_session_key
 
+logger = logging.getLogger(__name__)
+_MAX_HISTORY_DIRECTORY_ENTRIES = 1000
+
 
 class JsonlSessionStorage:
     """Store each complete session in one atomically replaced JSONL file."""
 
     def __init__(self, directory: str | Path) -> None:
         self._directory = Path(directory)
+        self._history_file_lock = Lock()
         if self._directory.exists() and not self._directory.is_dir():
             raise ValueError("session storage directory must be a directory")
 
@@ -39,6 +47,15 @@ class JsonlSessionStorage:
         if not path.exists():
             return None
         return self._load_path(path)
+
+    def read_history_session(self, session_key: str, *, max_bytes: int) -> tuple[Session, str] | None:
+        """Return a bounded snapshot and the revision of exactly those bytes."""
+
+        _validate_session_key(session_key)
+        try:
+            return self._load_history_path(self._path_for(session_key), max_bytes)
+        except FileNotFoundError:
+            return None
 
     def save(self, session: Session) -> None:
         """Atomically replace the file containing one complete session."""
@@ -64,7 +81,8 @@ class JsonlSessionStorage:
                 temporary_file.write(content)
                 temporary_file.flush()
                 os.fsync(temporary_file.fileno())
-            os.replace(temporary_path, destination)
+            with self._history_file_lock:
+                os.replace(temporary_path, destination)
         except Exception:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
@@ -76,7 +94,8 @@ class JsonlSessionStorage:
         _validate_session_key(session_key)
         path = self._path_for(session_key)
         try:
-            path.unlink()
+            with self._history_file_lock:
+                path.unlink()
         except FileNotFoundError:
             return False
         return True
@@ -87,31 +106,82 @@ class JsonlSessionStorage:
         sessions = (self._load_path(path) for path in self._directory.glob("*.jsonl"))
         return tuple(sorted(sessions, key=lambda session: session.key))
 
+    def iter_history_sessions(
+        self, *, max_files: int, max_bytes: int, cancelled: Event,
+    ) -> Iterator[tuple[Session, str] | None]:
+        """Load one bounded session at a time, yielding None for incomplete coverage."""
+
+        files = 0
+        try:
+            with os.scandir(self._directory) as entries:
+                for index, entry in enumerate(entries):
+                    if cancelled.is_set():
+                        return
+                    if index == _MAX_HISTORY_DIRECTORY_ENTRIES:
+                        yield None
+                        return
+                    if not entry.name.endswith(".jsonl"):
+                        continue
+                    if files == max_files:
+                        yield None
+                        return
+                    files += 1
+                    try:
+                        snapshot = self._load_history_path(Path(entry.path), max_bytes)
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, TypeError, ValueError, RecursionError) as error:
+                        logger.warning("Skipping an unreadable session (error_type=%s)", type(error).__name__)
+                        yield None
+                    else:
+                        yield snapshot
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            logger.warning("Could not enumerate session history (error_type=%s)", type(error).__name__)
+            yield None
+
     def _path_for(self, session_key: str) -> Path:
         digest = hashlib.sha256(session_key.encode("utf-8")).hexdigest()
         return self._directory / f"{digest}.jsonl"
 
-    def _load_path(self, path: Path) -> Session:
-        records = _read_records(path)
-        if not records or records[0].get("type") != "session":
-            raise ValueError(f"Invalid session file: {path.name}")
+    def _load_history_path(self, path: Path, max_bytes: int) -> tuple[Session, str]:
+        # On Windows a read handle can prevent an atomic replace or delete.
+        with self._history_file_lock:
+            if not stat.S_ISREG(path.lstat().st_mode):
+                raise ValueError("Session history requires a regular session file")
+            with path.open("rb") as file:
+                content = file.read(max_bytes + 1)
+        if len(content) > max_bytes:
+            raise ValueError("Session file exceeds the history read size limit")
+        with io.StringIO(content.decode("utf-8"), newline=None) as file:
+            session = _session_from_records(path, _parse_records(path, file))
+        if path != self._path_for(session.key):
+            raise ValueError("Session history key does not match its file")
+        return session, hashlib.sha256(content).hexdigest()
 
-        header = records[0]
-        messages = tuple(_message_from_record(record) for record in records[1:])
-        return Session(
-            key=_required_text(header, "key"),
-            created_at=_timestamp_from_record(header, "created_at"),
-            updated_at=_timestamp_from_record(header, "updated_at"),
-            system_prompt=_optional_system_prompt(header),
-            last_request_at=_optional_timestamp_from_record(
-                header,
-                "last_request_at",
-            ),
-            messages=messages,
-            summary=_optional_summary(header),
-            summary_until=_optional_summary_until(header),
-            goal_state=_optional_goal_state(header),
-        )
+    def _load_path(self, path: Path) -> Session:
+        with path.open(encoding="utf-8") as file:
+            records = _parse_records(path, file)
+        return _session_from_records(path, records)
+
+
+def _session_from_records(path: Path, records: list[dict[str, Any]]) -> Session:
+    if not records or records[0].get("type") != "session":
+        raise ValueError(f"Invalid session file: {path.name}")
+
+    header = records[0]
+    return Session(
+        key=_required_text(header, "key"),
+        created_at=_timestamp_from_record(header, "created_at"),
+        updated_at=_timestamp_from_record(header, "updated_at"),
+        system_prompt=_optional_system_prompt(header),
+        last_request_at=_optional_timestamp_from_record(header, "last_request_at"),
+        messages=tuple(_message_from_record(record) for record in records[1:]),
+        summary=_optional_summary(header),
+        summary_until=_optional_summary_until(header),
+        goal_state=_optional_goal_state(header),
+    )
 
 
 def _serialize_session(session: Session) -> str:
@@ -169,17 +239,16 @@ def _message_to_record(message: BaseMessage) -> dict[str, Any]:
     return record
 
 
-def _read_records(path: Path) -> list[dict[str, Any]]:
+def _parse_records(path: Path, lines: Iterable[str]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    with path.open(encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON in {path.name} at line {line_number}") from exc
-            if not isinstance(record, dict):
-                raise TypeError(f"Invalid record in {path.name} at line {line_number}")
-            records.append(record)
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON in {path.name} at line {line_number}") from exc
+        if not isinstance(record, dict):
+            raise TypeError(f"Invalid record in {path.name} at line {line_number}")
+        records.append(record)
     return records
 
 

@@ -155,6 +155,10 @@ class ToolsConfigTest(unittest.TestCase):
 
         self.assertEqual(config.tavily_api_key, "test-tavily-key")
 
+    def test_rejects_removed_session_history_setting(self) -> None:
+        with self.assertRaises(ValidationError):
+            ToolsConfig.model_validate({"session_history": {"enabled": False}})
+
 
 class WebSocketChannelConfigTest(unittest.TestCase):
     def test_defaults_to_a_local_listener(self) -> None:

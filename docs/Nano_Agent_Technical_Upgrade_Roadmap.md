@@ -76,7 +76,7 @@
 | Goal / Loop | 持续目标、内部续跑、子任务 | Goal 是否依赖最终文本判定成功；恢复状态是否完整 | `nanobot/agent/loop.py` |
 | Tool Registry | 文件、Shell、Web、MCP 工具 | Schema 类型、权限、结构化错误、超时、资源描述 | `nanobot/agent/tools/` 或实际位置 |
 | Provider | 多模型兼容、重试 | 路由、Fallback、成本和延迟统计 | `providers/` 或实际位置 |
-| Session | JSONL 保存、摘要压缩 | 是否可恢复半途任务；信息是否可反查 | `session/` 或实际位置 |
+| Session | JSONL 保存、摘要压缩、跨会话关键词检索与原文回查 | 中途运行恢复；大规模历史的检索耗时与召回率 | `nanobot/session/` |
 | Memory | `MEMORY.md`、记忆整理 | 是否整文件重写、缺少冲突处理与来源追踪 | `memory/consolidator.py` |
 | Skills | 静态扫描、显式激活、依赖检查 | 缺少检索路由、自创建、评测、版本化 | `skills/loader.py` |
 | Channels/API | CLI、WebSocket、HTTP、React UI（待核验） | UI 与 Runtime 是否耦合；缺少统一 Trace | `channels/`、`api/` 等 |

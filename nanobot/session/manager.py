@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 
 from .goals import GoalState
 from .models import Session, _validate_session_key
@@ -40,7 +42,7 @@ class SessionManager:
 
         if not isinstance(session, Session):
             raise TypeError("SessionManager.save requires a Session")
-        saved_session = session.with_updated_at(datetime.now(timezone.utc))
+        saved_session = session.with_updated_at(datetime.now(UTC))
         self._storage.save(saved_session)
         return saved_session
 
@@ -104,6 +106,20 @@ class SessionManager:
         """Return all saved sessions in stable key order."""
 
         return self._storage.list_sessions()
+
+    def read_history_session(self, session_key: str, *, max_bytes: int) -> tuple[Session, str] | None:
+        """Load a bounded history snapshot and its content revision."""
+
+        return self._storage.read_history_session(session_key, max_bytes=max_bytes)
+
+    def iter_history_sessions(
+        self, *, max_files: int, max_bytes: int, cancelled: Event,
+    ) -> Iterator[tuple[Session, str] | None]:
+        """Read bounded history snapshots, indicating any incomplete coverage."""
+
+        return self._storage.iter_history_sessions(
+            max_files=max_files, max_bytes=max_bytes, cancelled=cancelled,
+        )
 
 
 def _normalize_goal_objective(value: object) -> str:

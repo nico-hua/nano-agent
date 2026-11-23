@@ -230,7 +230,7 @@ Provider 层在 **nanobot/providers/**。它只负责将不同模型厂商的请
 
 ### 5.3 builtin、MCP 与主动消息
 
-当前 builtin 工具包括 workspace 文件操作、exec、cron、goal、spawn、message、web_search 和 web_fetch。文件工具集中在 **nanobot/tools/builtin/filesystem.py**，网络工具集中在 **nanobot/tools/builtin/web.py**。第一版仅允许 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 并行；写入、命令、消息、任务管理与 MCP 工具保持串行。
+当前 builtin 工具包括 workspace 文件操作、exec、cron、goal、spawn、message、web_search、web_fetch 和会话检索。文件工具集中在 **nanobot/tools/builtin/filesystem.py**，网络工具集中在 **nanobot/tools/builtin/web.py**。`read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch` 可在相邻分段内并发。写入、命令、消息、任务管理、会话检索与 MCP 工具保持串行。
 
 MCP 工具不同于 builtin：**MCPProvider**（**nanobot/mcp/provider.py**）在 Application 启动时按配置连接 stdio、SSE 或 Streamable HTTP server，列出工具后由 **MCPToolWrapper**（**nanobot/mcp/tool.py**）动态注册到共享 ToolRegistry。当前实现仅处理 MCP tools。
 
@@ -246,7 +246,15 @@ MCP 工具不同于 builtin：**MCPProvider**（**nanobot/mcp/provider.py**）�
 
 Session 保存完整 user、assistant、tool LLM 消息链，但基础 system prompt 只保存在首行 `type=session` 的头记录中，不作为 `type=message` 写入消息链。AgentLoop 仅在 AgentRunner 返回完整序列后，一次性保存历史、当前 user、新增 assistant/tool 消息、本轮基础 system prompt 与独立的 `last_request_at`；失败或取消不会推进该时间。
 
-每条 BaseMessage 都带有默认值为 true 的 **is_visible** 展示标记；JsonlSessionStorage 持久化该字段，读取旧记录时若字段缺失则按 true 处理。该标记不改变发送给 Provider 的完整上下文，只供 Session API、摘要列表和 Web UI 决定哪些消息面向用户展示。对于 source=cron 和异步 source=subagent 的内部 turn，AgentLoop 仅将本轮最后一条 AIMessage 标为可见，其余新增 HumanMessage、AIMessage 和 ToolMessage 均隐藏；已有历史和其他来源保持原值。
+每条 BaseMessage 都带有默认值为 true 的 **is_visible** 展示标记；JsonlSessionStorage 持久化该字段，读取旧记录时若字段缺失则按 true 处理。Session API、摘要列表、Web UI 和会话检索工具用该标记判断面向用户的可见性。对于 source=cron 和异步 source=subagent 的内部 turn，AgentLoop 仅将本轮最后一条 AIMessage 标为可见，其余新增 HumanMessage、AIMessage 和 ToolMessage 均隐藏；已有历史和其他来源保持原值。
+
+#### 会话检索
+
+`ToolLoader` 使用主 Agent 注入的 `SessionManager` 注册 [会话检索工具](../nanobot/tools/builtin/session_history.py)。两个工具从同一 workspace 的 JSONL 文件读取已保存的历史，跨渠道查找可见的用户和助手正文。这些正文也包括 `summary_until` 之前保存的原始消息。检索逻辑位于 [history.py](../nanobot/session/history.py)。
+
+- `search_sessions` 以忽略大小写的字面短语优先，再匹配同一条消息中出现的全部关键词。每个会话返回一条命中，同相关度时按最近请求时间排序，缺少请求时间时用更新时间。返回的 `message_index` 是原始消息序号，从零开始。
+- `read_session` 使用 `session_id`、`revision` 和 `message_index` 读取命中前后的可见消息。`revision` 取自读到的 JSONL 字节的 SHA-256，重读时版本必须一致。单条正文超过 1,000 字符时会截断并标记 `truncated: true`。
+- 工具在后台线程读取文件。搜索最多处理 1,000 个目录项和 100 个会话文件，单文件读取上限为 2 MiB。达到扫描上限或跳过不可读的会话时，返回 `partial: true`。同一存储实例用短锁协调文件读取、原子替换和删除，解析在锁外进行。
 
 ### 6.2 ContextBuilder 是请求态
 
@@ -497,7 +505,7 @@ HTTP API
 10. **Memory cursor 只在确认后推进。** MEMORY.md 更新成功或模型明确无记忆可写时才跳过事件；失败必须保留 cursor。
 11. **WebSocket 断开不会遗留任务。** 断开触发同一 session 的 /stop 路径，Channel.stop 清理连接和 handler。
 12. **敏感值不得外泄。** API key、QQ secret、授权 token、Authorization header 和消息内容不得写进日志、错误响应或文档示例。
-13. **展示标记不破坏完整历史。** is_visible 只控制 API 摘要和 Web UI 渲染；隐藏消息仍保留在 Session 和 Provider 上下文中。cron 与异步 subagent turn 只展示本轮最后一条 AIMessage，其他来源默认展示。
+13. **可见性与完整历史分开处理。** `is_visible` 控制 API 摘要、Web UI 渲染和会话检索的消息筛选。隐藏消息仍保留在 Session 和 Provider 上下文中。cron 与异步 subagent turn 只展示本轮最后一条 AIMessage，其他来源默认展示。
 
 ## 11. 设计取舍
 
@@ -525,7 +533,7 @@ HTTP API
 
 - Provider 抽象、OpenAI-compatible 与 Anthropic-compatible 实现、文本流式回调、单次请求超时、有限 transient retry 与统一错误结果。
 - Tool 基础设施、builtin 文件/命令/网络/消息/Goal/Cron/Spawn 工具、MCP 动态工具，以及显式只读工具的有序批次并行。
-- JSONL Session、上下文预算裁剪、Session 摘要、持久化 GoalState。
+- JSONL Session、跨会话关键词检索和原文回查、上下文预算裁剪、Session 摘要、持久化 GoalState。
 - MEMORY.md、持久化记忆事件队列与 cursor 恢复。
 - CommandRouter、Goal continuation、Goal 用户输入注入与会话级停止。
 - 可持久化 at/every/Cron 表达式任务、按时区计算与其进入 Agent 的链路。
@@ -533,7 +541,7 @@ HTTP API
 - QQ Channel、静态认证和流式协议的 WebSocket Channel、本地 HTTP API。
 - 独立 React Web UI：中英文界面、会话列表、Markdown、工具调用展示、停止、认证、有限重连和斜杠命令提示。
 
-最新完整离线 Python 测试为 **564 passed, 10 skipped**；前端测试为 **39 passed**，生产构建通过；命令见 **webui/README.md**。
+最新完整离线 Python 测试为 **570 passed, 10 skipped**。上次前端验证为 **39 passed**，生产构建通过。前端命令见 **webui/README.md**。
 
 ### 暂时跳过的功能
 

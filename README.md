@@ -41,6 +41,17 @@ HTTP API 的 `POST /v1/messages` 为了返回当前请求的响应，会直接�
 
 不要把 API key、QQ secret、Session 内容或 workspace 运行时数据提交到仓库。
 
+## 会话检索
+
+主 Agent 默认注册 `search_sessions` 和 `read_session`。检索范围是单用户 workspace 的已保存会话，包括不同渠道的会话、当前会话已保存的历史和压缩前的消息。HTTP 和 WebSocket 入口沿用 `auth` 配置。
+
+例如在新会话中问「上次讨论的 Redis 缓存一致性方案是什么？」Agent 可以按以下顺序查证。
+
+1. `search_sessions(query, limit=5)` 按短语和关键词查找会话，返回命中片段、会话 ID、消息位置和版本。
+2. `read_session(session_id, revision, message_index, limit=6)` 使用同一命中的定位信息读取附近消息。会话更新或删除后，需要重新搜索。
+
+工具返回的对话正文限于可见的用户和助手消息，会发送给当前模型并作为工具结果保存在本轮会话中。单次搜索最多检查 100 个会话文件，单文件上限 2 MiB，支持不超过 512 字符的会话 ID。搜索结果中的 `partial: true` 表示扫描覆盖不全。实现细节见 [会话检索架构](docs/ARCHITECTURE.md#会话检索)。
+
 ## Skills
 
 Skill 位于 `<workspace>/skills/<skill_name>/SKILL.md`。普通 Skill 只作为可用能力摘要提供；用户可在当前消息中使用 `$skill-name` 注入其正文。标记为 `always: true` 的可用 Skill 会在每轮请求中自动注入。

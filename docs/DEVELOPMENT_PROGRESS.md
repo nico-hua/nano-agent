@@ -4,6 +4,10 @@
 
 ## 项目开发进度
 
+### 2026-11-23
+
+- [x] 新增默认注册的 `search_sessions` 和 `read_session`。主 Agent 可以从单用户 workspace 的 JSONL 历史跨渠道检索可见对话，再按命中位置读取原文。结果覆盖压缩前的消息，包含扫描范围提示和版本校验。完整离线 Python 测试为 `570 passed, 10 skipped`。
+
 ### 2026-09-18
 
 - [x] Web UI 增加中英文界面切换，默认中文并将偏好保存在浏览器 localStorage。改造仅覆盖前端自有文案；用户/Agent 消息、工具名与参数、会话预览和后端原始错误保持原文。前端本地错误使用稳定错误码，可在切换语言后立即重新渲染。最新验证为 Web UI `39 passed`，production build 通过。
@@ -162,7 +166,7 @@
 ### 高级能力
 
 - [ ] `generate_image`。
-- [ ] `list_sessions` / `search_sessions` / `read_session`。
+- [ ] `list_sessions` 内置工具。
 - [ ] `send_session_message`。
 - [ ] `my`：运行时控制。
 - [ ] `run_cli_app`。

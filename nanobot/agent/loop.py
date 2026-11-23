@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..bus import InboundMessage, MessageBus, OutboundMessage
@@ -525,7 +525,7 @@ class AgentLoop:
                 system_prompt = _system_prompt_for_request(
                     session,
                     self._context_builder,
-                    datetime.now(timezone.utc),
+                    datetime.now(UTC),
                 )
                 blocked_tool_names = _blocked_tool_names(is_goal_turn)
                 available_tools = tuple(
@@ -727,7 +727,7 @@ class AgentLoop:
         session = (
             self._session_manager.get_or_create(session_key)
             .with_messages((*history, *turn_messages))
-            .with_request_state(system_prompt, datetime.now(timezone.utc))
+            .with_request_state(system_prompt, datetime.now(UTC))
         )
         if is_goal_turn and result.stop_reason != "max_iterations":
             status: Literal["completed", "failed"] = (
