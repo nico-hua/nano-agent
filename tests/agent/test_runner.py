@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 from collections.abc import Awaitable, Callable, Sequence
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from nanobot.agent import AgentRunner, AgentRunResult, AgentRunSpec
@@ -19,6 +21,7 @@ from nanobot.providers import (
     ToolMessage,
 )
 from nanobot.tools import Tool, ToolParameter, ToolRegistry, ToolResult
+from nanobot.tools.builtin.filesystem import ReadFileTool, WriteFileTool
 
 
 class ScriptedProvider(LLMProvider):
@@ -594,7 +597,7 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_runs_parallel_tools_together_before_serial_tools(self) -> None:
+    async def test_runs_adjacent_parallel_tools_without_crossing_a_serial_call(self) -> None:
         first_started = asyncio.Event()
         first_release = asyncio.Event()
         first_finished = asyncio.Event()
@@ -617,57 +620,105 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
             finished=second_finished,
             execution_order=execution_order,
         )
+        last = ImmediateParallelTool("parallel_last", execution_order)
         requests = (
             tool_call("call-1", first.name),
-            tool_call("call-2", serial.name),
-            tool_call("call-3", second.name),
+            tool_call("call-2", second.name),
+            tool_call("call-3", serial.name),
+            tool_call("call-4", last.name),
         )
-        provider = ScriptedProvider(
+        provider = StreamingProvider(
             (
                 LLMResponse(tool_calls=requests),
                 LLMResponse(content="Batch complete."),
-            )
+            ),
+            ((), ()),
         )
 
+        async def on_tool_call(request: ToolCallRequest) -> None:
+            execution_order.append(f"{request.name}:reported")
+
         run_task = asyncio.create_task(
-            AgentRunner().run(
+            AgentRunner().run_stream(
                 AgentRunSpec(
                     messages=(HumanMessage(content="Run the batch."),),
                     provider=provider,
-                    tool_registry=ToolRegistry((first, serial, second)),
+                    tool_registry=ToolRegistry((first, second, serial, last)),
+                    on_tool_call=on_tool_call,
                 )
             )
         )
-        await asyncio.wait_for(
-            asyncio.gather(first_started.wait(), second_started.wait()),
-            timeout=1,
-        )
-        self.assertNotIn("serial:execute", execution_order)
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(first_started.wait(), second_started.wait()),
+                timeout=1,
+            )
+            second_release.set()
+            await asyncio.wait_for(second_finished.wait(), timeout=1)
+            self.assertNotIn("serial:execute", execution_order)
+            self.assertNotIn("parallel_last:reported", execution_order)
+        finally:
+            first_release.set()
+            second_release.set()
 
-        second_release.set()
-        await asyncio.wait_for(second_finished.wait(), timeout=1)
-        self.assertFalse(run_task.done())
-        self.assertNotIn("serial:execute", execution_order)
-
-        first_release.set()
         result = await asyncio.wait_for(run_task, timeout=1)
 
         self.assertEqual(result.content, "Batch complete.")
         self.assertEqual(result.tools_used, requests)
+        self.assertEqual(
+            [event for event in execution_order if event.endswith(":reported")],
+            [
+                "parallel_first:reported",
+                "parallel_second:reported",
+                "serial:reported",
+                "parallel_last:reported",
+            ],
+        )
         self.assertGreater(
             execution_order.index("serial:execute"),
             execution_order.index("parallel_first:end"),
         )
         self.assertGreater(
+            execution_order.index("parallel_last:execute"),
             execution_order.index("serial:execute"),
-            execution_order.index("parallel_second:end"),
         )
+        self.assertEqual(
+            provider.stream_calls[1][0][-4:],
+            (
+                ToolMessage(content="result: parallel_first", tool_call_id="call-1"),
+                ToolMessage(content="result: parallel_second", tool_call_id="call-2"),
+                ToolMessage(content="result: serial", tool_call_id="call-3"),
+                ToolMessage(content="result: parallel_last", tool_call_id="call-4"),
+            ),
+        )
+
+    async def test_reads_the_correct_file_version_on_each_side_of_a_write(self) -> None:
+        requests = (
+            tool_call("before", "read_file", path="note.txt"),
+            tool_call("write", "write_file", path="note.txt", content="new"),
+            tool_call("after", "read_file", path="note.txt"),
+        )
+        provider = ScriptedProvider(
+            (LLMResponse(tool_calls=requests), LLMResponse(content="Updated."))
+        )
+        with TemporaryDirectory() as workspace:
+            (Path(workspace) / "note.txt").write_text("old", encoding="utf-8")
+            await AgentRunner().run(
+                AgentRunSpec(
+                    messages=(HumanMessage(content="Read, update, and read again."),),
+                    provider=provider,
+                    tool_registry=ToolRegistry(
+                        (ReadFileTool(workspace), WriteFileTool(workspace))
+                    ),
+                )
+            )
+
         self.assertEqual(
             provider.complete_calls[1][0][-3:],
             (
-                ToolMessage(content="result: parallel_first", tool_call_id="call-1"),
-                ToolMessage(content="result: serial", tool_call_id="call-2"),
-                ToolMessage(content="result: parallel_second", tool_call_id="call-3"),
+                ToolMessage(content="old", tool_call_id="before"),
+                ToolMessage(content="Wrote 3 characters to note.txt", tool_call_id="write"),
+                ToolMessage(content="new", tool_call_id="after"),
             ),
         )
 
@@ -748,7 +799,7 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
             ),
         )
 
-    async def test_cancelling_runner_cancels_parallel_tools(self) -> None:
+    async def test_cancelling_runner_stops_the_current_group_and_later_calls(self) -> None:
         first_started = asyncio.Event()
         second_started = asyncio.Event()
         never_release = asyncio.Event()
@@ -766,9 +817,14 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
             finished=asyncio.Event(),
             execution_order=[],
         )
+        later_calls: list[str] = []
+        serial = OrderedSerialTool("serial", later_calls)
+        last = ImmediateParallelTool("parallel_last", later_calls)
         requests = (
             tool_call("call-1", first.name),
             tool_call("call-2", second.name),
+            tool_call("call-3", serial.name),
+            tool_call("call-4", last.name),
         )
         provider = ScriptedProvider((LLMResponse(tool_calls=requests),))
         run_task = asyncio.create_task(
@@ -776,7 +832,7 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
                 AgentRunSpec(
                     messages=(HumanMessage(content="Run both tools."),),
                     provider=provider,
-                    tool_registry=ToolRegistry((first, second)),
+                    tool_registry=ToolRegistry((first, second, serial, last)),
                 )
             )
         )
@@ -791,6 +847,42 @@ class AgentRunnerTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(first.cancelled.is_set())
         self.assertTrue(second.cancelled.is_set())
+        self.assertEqual(later_calls, [])
+
+    async def test_a_parallel_tool_cancelling_cleans_up_its_siblings(self) -> None:
+        sibling = ControlledParallelTool(
+            "sibling",
+            started=asyncio.Event(),
+            release=asyncio.Event(),
+            finished=asyncio.Event(),
+            execution_order=[],
+        )
+
+        class CancellingTool(Tool):
+            parallelizable = True
+
+            async def execute(self, **arguments: Any) -> ToolResult:
+                await sibling.started.wait()
+                raise asyncio.CancelledError
+
+        cancelling = CancellingTool("cancelling", "Cancel this tool call.")
+        requests = (
+            tool_call("call-1", cancelling.name),
+            tool_call("call-2", sibling.name),
+        )
+        provider = ScriptedProvider((LLMResponse(tool_calls=requests),))
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(
+                AgentRunner().run(
+                    AgentRunSpec(
+                        messages=(HumanMessage(content="Run both tools."),),
+                        provider=provider,
+                        tool_registry=ToolRegistry((cancelling, sibling)),
+                    )
+                ),
+                timeout=1,
+            )
+        self.assertTrue(sibling.cancelled.is_set())
 
     async def test_multiple_default_tools_remain_serial(self) -> None:
         execution_order: list[str] = []

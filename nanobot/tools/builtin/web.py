@@ -239,7 +239,7 @@ class WebFetchTool(Tool):
                         )
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return _tool_error(
                 f"Request timed out after {self._timeout_seconds} seconds"
             )
@@ -530,7 +530,7 @@ class WebSearchTool(Tool):
                 response_payload = await response.json()
         except asyncio.CancelledError:
             raise
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return _tool_error(
                 f"Tavily search request timed out after {self._timeout_seconds} seconds"
             )

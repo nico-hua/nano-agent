@@ -158,7 +158,7 @@ CommandRouter 在调用 Runner 前拦截斜杠命令。普通消息由 ContextBu
 1. 调用 Provider.complete，或通过 Provider.stream 接收文本 delta。
 2. 没有工具调用时，追加最终 AIMessage；Goal 模式下可检查待注入用户输入，存在时继续下一次模型调用。
 3. 有工具调用时，先追加带 ToolCallRequest 的 AIMessage。
-4. 单个 tool call 继续通过 ToolRegistry.execute 串行执行。多个 tool call 会先通过 ToolRegistry.get 检查 `parallelizable`：显式允许且未被 blocked 的工具由 `asyncio.gather` 并发执行；完整并行组结束后，再按原顺序执行副作用、未知、blocked 或其他不可并行工具。
+4. Runner 按原顺序处理工具调用，通过 ToolRegistry.get 检查 `parallelizable`。连续且未被禁用的可并行调用由 `asyncio.gather` 并发执行。串行、未知和禁用调用各自占据原位置，等待前一段结束，再执行或返回错误。流式工具通知按原顺序发送，并先于对应工具执行。
 5. Runner 收集完整批次结果，再严格按模型原始 tool call 顺序追加 ToolMessage；每条结果保留对应 `tool_call_id`，工具异常仍由 ToolRegistry 转换为 ToolResult.error。
 6. 整个工具批次完成后，Goal 模式才允许追加合并后的用户输入，保证 tool call 与 tool result 不会被打断。
 

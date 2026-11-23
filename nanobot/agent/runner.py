@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from itertools import groupby
 
 from ..providers import (
     AIMessage,
@@ -248,60 +249,67 @@ async def _execute_tool_batch(
     *,
     streaming: bool,
 ) -> tuple[ToolMessage, ...]:
-    """Execute one complete tool batch and preserve provider-requested order."""
+    """Run adjacent parallelizable calls together between serial calls."""
 
-    result_contents = [""] * len(tool_calls)
-    parallel_indexes: list[int] = []
-    serial_indexes: list[int] = []
-
-    for index, tool_call in enumerate(tool_calls):
+    def can_run_in_parallel(tool_call: ToolCallRequest) -> bool:
         tool = spec.tool_registry.get(tool_call.name)
-        if (
-            len(tool_calls) > 1
-            and tool_call.name not in blocked_tool_names
+        return (
+            tool_call.name not in blocked_tool_names
             and tool is not None
             and tool.parallelizable
-        ):
-            parallel_indexes.append(index)
-        else:
-            serial_indexes.append(index)
+        )
 
-    # Notify in provider order before scheduling the concurrent reads. This
-    # keeps visible tool-call events deterministic without serializing the work.
-    for index in parallel_indexes:
-        tool_call = tool_calls[index]
-        logger.info("Executing requested tool (name=%s)", tool_call.name)
-        if streaming:
-            await _notify_tool_call(spec, tool_call)
-
-    if parallel_indexes:
-        parallel_results = await asyncio.gather(
-            *(
-                spec.tool_registry.execute(
-                    tool_calls[index].name,
-                    tool_calls[index].arguments,
-                )
-                for index in parallel_indexes
+    result_contents: list[str] = []
+    for parallelizable, calls in groupby(tool_calls, key=can_run_in_parallel):
+        group = tuple(calls)
+        if parallelizable and len(group) > 1:
+            result_contents.extend(
+                await _execute_parallel_tool_calls(spec, group, streaming=streaming)
             )
-        )
-        for index, result in zip(parallel_indexes, parallel_results, strict=True):
-            result_contents[index] = result.content
-
-    # Side-effecting, blocked, unknown, and otherwise non-parallel tools run
-    # only after the complete parallel group has settled.
-    for index in serial_indexes:
-        tool_call = tool_calls[index]
-        result_contents[index] = await _execute_serial_tool_call(
-            spec,
-            tool_call,
-            blocked_tool_names,
-            streaming=streaming,
-        )
+        else:
+            for tool_call in group:
+                result_contents.append(
+                    await _execute_serial_tool_call(
+                        spec,
+                        tool_call,
+                        blocked_tool_names,
+                        streaming=streaming,
+                    )
+                )
 
     return tuple(
         ToolMessage(content=content, tool_call_id=tool_call.id)
         for tool_call, content in zip(tool_calls, result_contents, strict=True)
     )
+
+
+async def _execute_parallel_tool_calls(
+    spec: AgentRunSpec,
+    tool_calls: Sequence[ToolCallRequest],
+    *,
+    streaming: bool,
+) -> list[str]:
+    for tool_call in tool_calls:
+        logger.info("Executing requested tool (name=%s)", tool_call.name)
+        if streaming:
+            await _notify_tool_call(spec, tool_call)
+
+    tasks = [
+        asyncio.create_task(
+            spec.tool_registry.execute(tool_call.name, tool_call.arguments)
+        )
+        for tool_call in tool_calls
+    ]
+    try:
+        results = await asyncio.gather(*tasks)
+    finally:
+        # A tool can cancel itself without gather cancelling its siblings.
+        pending = [task for task in tasks if not task.done()]
+        if pending:
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+    return [result.content for result in results]
 
 
 async def _execute_serial_tool_call(
