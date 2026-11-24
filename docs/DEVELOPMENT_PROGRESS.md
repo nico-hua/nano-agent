@@ -43,7 +43,7 @@
 
 - [x] 实现 `Session`、`SessionManager` 和 JSONL 持久化存储。每个 session 使用安全文件名并通过临时文件 + 原子替换保存；默认目录为 `<workspace>/sessions/`，重启后可恢复完整 user、assistant、tool call 与 tool result 历史。
 - [x] 将 Session 接入 `AgentLoop`：非空 `session_id` 优先作为 session key，否则使用 `channel:chat_id`；仅在 AgentRunner 成功后按顺序保存当前 user 与本轮 assistant/tool 消息。`last_request_at` 保存到 `type=session` 头记录，系统提示词仅用于当轮请求；普通、cron、subagent 和 goal turn 使用同一记录规则，失败或取消不推进请求时间。
-- [x] `ContextBuilder` 每轮从 workspace 的 `AGENTS.md`、`SOUL.md`、`USER.md`、Skills 和长期记忆构建系统提示词。已有会话摘要作为独立的 `HumanMessage` 放在近期原文之前，Runner 在轮内压缩时沿用该顺序。`/new` 会清除最近请求时间。
+- [x] `ContextBuilder` 每轮从配置目录的 `AGENTS.md`、`SOUL.md`、`USER.md`、工作区 Skills 和长期记忆构建系统提示词。已有会话摘要作为独立的 `HumanMessage` 放在近期原文之前，Runner 在轮内压缩时沿用该顺序。`/new` 会清除最近请求时间。
 - [x] `ContextBuilder` 组装系统提示词、全部未压缩历史和当前消息。`AgentRunner` 在每次模型调用前核算消息、工具 Schema 与输出预留。
 - [x] `SessionCompactor` 为运行中按需压缩与手动 `/compact` 生成带原始消息索引的结构化摘要。成功轮次原子保存完整历史与已压缩历史边界。
 - [x] 实现长期记忆第一、二阶段：`MemoryStore` 动态读取 `<workspace>/memory/MEMORY.md`；`MemoryConsolidator` 通过一次专用 Provider 请求生成完整替换式记忆内容，只在有效非空结果下原子写入。

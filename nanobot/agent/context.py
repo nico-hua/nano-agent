@@ -1,4 +1,4 @@
-"""Build the system prompt from the current workspace context files."""
+"""Assemble user-managed prompt templates, workspace Skills and recalled memory."""
 
 from __future__ import annotations
 
@@ -36,16 +36,19 @@ def history_summary_message(summary: str) -> HumanMessage:
 
 
 class ContextBuilder:
-    """Build a fresh system prompt using workspace files, memory, and Skills."""
+    """Read optional prompt templates alongside the configuration file."""
 
-    def __init__(self, workspace: str | Path) -> None:
+    def __init__(self, workspace: str | Path, *, config_dir: str | Path | None = None) -> None:
         if not isinstance(workspace, (str, Path)):
             raise TypeError("ContextBuilder workspace must be a string or Path")
         self._workspace = Path(workspace).resolve()
+        self._config_dir = Path(config_dir).resolve() if config_dir is not None else None
+        if self._config_dir is not None and self._config_dir.is_relative_to(self._workspace):
+            raise ValueError("The configuration directory must be outside the workspace")
         self._skills_loader = SkillsLoader(self._workspace)
 
     def build_system_prompt(self, *, user_content: str = "", memory: str = "") -> str:
-        """Return a prompt built from the current workspace file contents."""
+        """Read the current templates and Skills for this request."""
 
         sections = [
             "\n".join(
@@ -100,12 +103,14 @@ class ContextBuilder:
         return (system, *history, current_message)
 
     def _read_optional_file(self, filename: str) -> str | None:
+        if self._config_dir is None:
+            return None
         try:
-            content = (self._workspace / filename).read_text(encoding="utf-8")
+            content = (self._config_dir / filename).read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
         except (OSError, UnicodeDecodeError):
-            logger.warning("Skipping unreadable workspace context file (name=%s)", filename)
+            logger.warning("Skipping unreadable prompt template (name=%s)", filename)
             return None
         return content if content.strip() else None
 

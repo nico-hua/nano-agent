@@ -17,4 +17,4 @@ After a completed user turn, the runtime reviews the conversation for enduring p
 
 Users can type `/memory` to see active entries and their sources. Each source identifies a memory event and a zero-based position within that event's saved messages. For `read_session`, use the message index returned by `search_sessions`.
 
-The system prompt also reads workspace guidance from `AGENTS.md`, the user profile from `USER.md`, and communication style from `SOUL.md`.
+The user maintains `AGENTS.md`, `SOUL.md`, and `USER.md` beside the runtime configuration. A request to remember something follows the SQLite consolidation flow above.

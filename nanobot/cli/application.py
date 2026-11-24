@@ -98,7 +98,7 @@ class Application:
         self._tool_registry = ToolRegistry()
         self._tool_loader = tool_loader if tool_loader is not None else ToolLoader()
         self._provider = provider_factory(config.provider)
-        self._context_builder = ContextBuilder(config.workspace)
+        self._context_builder = ContextBuilder(config.workspace, config_dir=config.config_dir)
         input_budget = config.context_window_tokens - config.provider.default_max_tokens
         self._session_compactor = SessionCompactor(
             self._provider,

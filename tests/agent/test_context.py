@@ -21,17 +21,22 @@ from nanobot.session import Session
 class ContextBuilderTest(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
-        self._workspace = Path(self._temporary_directory.name)
+        root = Path(self._temporary_directory.name)
+        self._workspace = root / "work"
+        self._config_dir = root / "settings"
+        self._workspace.mkdir()
+        self._config_dir.mkdir()
+        self._builder = ContextBuilder(self._workspace, config_dir=self._config_dir)
 
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
 
-    def test_builds_prompt_with_all_workspace_context_files(self) -> None:
+    def test_builds_prompt_with_all_config_directory_templates(self) -> None:
         self._write("AGENTS.md", "Follow the workspace rules.")
         self._write("SOUL.md", "Be concise and curious.")
         self._write("USER.md", "The user prefers Chinese.")
 
-        prompt = ContextBuilder(self._workspace).build_system_prompt()
+        prompt = self._builder.build_system_prompt()
 
         self.assertIn("You are Nanobot, a helpful AI assistant.", prompt)
         self.assertIn(f"`{self._workspace.resolve()}`", prompt)
@@ -42,18 +47,25 @@ class ContextBuilderTest(unittest.TestCase):
     def test_skips_missing_and_empty_context_files(self) -> None:
         self._write("AGENTS.md", "")
         self._write("SOUL.md", "   \n")
+        for name in ("AGENTS.md", "SOUL.md", "USER.md"):
+            (self._workspace / name).write_text("Workspace shadow", encoding="utf-8")
 
-        prompt = ContextBuilder(self._workspace).build_system_prompt()
+        prompt = self._builder.build_system_prompt()
 
         self.assertIn("# Nanobot", prompt)
         self.assertNotIn("## Workspace Instructions", prompt)
         self.assertNotIn("## Agent Style", prompt)
         self.assertNotIn("## User Profile", prompt)
 
+    def test_rejects_config_directory_inside_workspace(self) -> None:
+        for directory in (self._workspace, self._workspace / ".nanobot"):
+            with self.subTest(directory=directory), self.assertRaises(ValueError):
+                ContextBuilder(self._workspace, config_dir=directory)
+
     def test_places_memory_after_workspace_and_skill_sections(self) -> None:
         self._write("AGENTS.md", "Workspace rules.")
         self._write_skill("guide", "---\nname: guide\ndescription: A guide.\n---\nSkill body.\n")
-        messages = ContextBuilder(self._workspace).build_request_messages(
+        messages = self._builder.build_request_messages(
             (), HumanMessage(content="Use $guide."), memory="- [decision] Current preference.",
         )
 
@@ -69,7 +81,7 @@ class ContextBuilderTest(unittest.TestCase):
         self._write("SOUL.md", "soul")
         self._write("USER.md", "user")
 
-        prompt = ContextBuilder(self._workspace).build_system_prompt()
+        prompt = self._builder.build_system_prompt()
 
         self.assertLess(
             prompt.index("## Workspace Instructions"),
@@ -83,7 +95,7 @@ class ContextBuilderTest(unittest.TestCase):
     def test_includes_long_term_memory_after_workspace_context(self) -> None:
         self._write("USER.md", "The user prefers Chinese.")
 
-        prompt = ContextBuilder(self._workspace).build_system_prompt(memory="Remember the user prefers concise answers.")
+        prompt = self._builder.build_system_prompt(memory="Remember the user prefers concise answers.")
 
         self.assertIn("## Long-term Memory", prompt)
         self.assertIn("Remember the user prefers concise answers.", prompt)
@@ -382,15 +394,13 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertEqual(session.messages, original_messages)
         self.assertIn("Persistent user preference.", messages[0].content)
 
-    def test_reloads_files_without_modifying_the_workspace(self) -> None:
+    def test_reloads_templates_after_user_edits(self) -> None:
         path = self._write("SOUL.md", "First style.")
         before = path.read_bytes(), path.stat().st_mtime_ns
-        builder = ContextBuilder(self._workspace)
-
-        first_prompt = builder.build_system_prompt()
+        first_prompt = self._builder.build_system_prompt()
         after_first_build = path.read_bytes(), path.stat().st_mtime_ns
         path.write_text("Second style.", encoding="utf-8")
-        second_prompt = builder.build_system_prompt()
+        second_prompt = self._builder.build_system_prompt()
 
         self.assertIn("First style.", first_prompt)
         self.assertIn("Second style.", second_prompt)
@@ -451,7 +461,7 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertGreater(estimate_message_tokens(HumanMessage(content="")), 0)
 
     def _write(self, filename: str, content: str) -> Path:
-        path = self._workspace / filename
+        path = self._config_dir / filename
         path.write_text(content, encoding="utf-8")
         return path
 

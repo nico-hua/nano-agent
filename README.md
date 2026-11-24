@@ -6,12 +6,12 @@ Nano Agent 是一个参考开源项目 Nanobot 从零复现的轻量级 AI Agent
 
 - 统一的 `LLMProvider` 抽象，以及 OpenAI-compatible 和 Anthropic-compatible Provider；每次请求可设置超时，并对 timeout、连接错误、HTTP 429/5xx 等 transient failure 进行有限重试。
 - Provider 无关的消息、工具调用和 `LLMResponse` 模型。
-- 内置 workspace 工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`find_files`、`grep`、`apply_patch` 与 `exec` 集中位于 `tools/builtin/filesystem.py`，共用 workspace 路径安全边界。`find_files` 按名称或 glob 查找文件，`grep` 以正则搜索 UTF-8 文本，`apply_patch` 使用严格的结构化补丁精确新增、修改或删除文本文件；三者均限制结果规模、跳过常见生成目录，并拒绝越过 workspace 或通过符号链接逃逸。网络工具统一位于 `tools/builtin/web.py`：`web_search` 通过 Tavily 返回有限的标题、URL 与摘要，`web_fetch` 以受限的 HTTP(S) 请求读取一个已知公开页面并提取文本；后者拒绝本机和内网目标、限制重定向与响应大小，且不执行页面 JavaScript。`message` 工具经共享 `MessageBus` 向当前 RequestContext 所属渠道主动发送一条文本消息，不能由模型改写目标路由；QQ 会将其作为主动消息处理，不复用入站 `message_id`。
+- 内置 workspace 工具：`read_file`、`write_file`、`edit_file`、`list_dir`、`find_files`、`grep` 与 `apply_patch` 集中位于 `tools/builtin/filesystem.py`，共用 workspace 路径检查。`exec` 在 workspace 内启动 shell，命令本身继承运行账户的文件权限。`find_files` 按名称或 glob 查找文件，`grep` 以正则搜索 UTF-8 文本，`apply_patch` 使用严格的结构化补丁精确新增、修改或删除文本文件；三者均限制结果规模、跳过常见生成目录，并拒绝越过 workspace 或通过符号链接逃逸。网络工具统一位于 `tools/builtin/web.py`：`web_search` 通过 Tavily 返回有限的标题、URL 与摘要，`web_fetch` 以受限的 HTTP(S) 请求读取一个已知公开页面并提取文本；后者拒绝本机和内网目标、限制重定向与响应大小，且不执行页面 JavaScript。`message` 工具经共享 `MessageBus` 向当前 RequestContext 所属渠道主动发送一条文本消息，不能由模型改写目标路由；QQ 会将其作为主动消息处理，不复用入站 `message_id`。
 - `ToolRegistry`、`ToolLoader` 与 MCP tools 接入；MCP 支持 stdio、SSE 和 Streamable HTTP。
 - 支持文本流式与非流式调用的 AgentRunner 工具调用循环，以及基于 `asyncio.Queue` 的 MessageBus；流式工具执行前可单独通知调用方工具名称和参数。同一批次内，相邻且可并行的工具调用会并发执行，例如 `read_file`、`list_dir`、`find_files`、`grep`、`web_search` 和 `web_fetch`。串行调用等待前一段执行结束，返回后才执行后续调用。工具结果按模型请求顺序写回。
 - QQ 文本 Channel、最小 WebSocket Channel，以及独立的 React + TypeScript Web UI；均复用 ChannelManager、Application 生命周期和 `python -m nanobot` CLI 入口。WebSocket 默认仅监听本机，连接后经现有 `MessageBus` 与 AgentLoop 通信；Web UI 默认使用中文，可在右上角切换中英文，并可查看、切换、新建和删除本地持久化会话、停止当前 session 的流式生成。
 - 基于 `aiohttp` 的最小本地 HTTP API：`GET /health`、`POST /v1/messages`、`GET /v1/sessions`、`GET /v1/sessions/{session_id}` 与 `DELETE /v1/sessions/{session_id}`。消息请求和删除请求经 `AgentLoop` 协调；会话读取接口经 `SessionManager` 返回带有 `is_visible` 展示标记的 user/assistant 历史，不暴露 system prompt 或 tool result。
-- workspace 下的 JSONL Session 持久化、逐次模型调用的预算检查和按需摘要压缩。每轮从 workspace 重建系统提示词，先放工作区指令与 Skills，再追加最新长期记忆。会话摘要以独立的 `HumanMessage` 放在系统提示词之后，随后是近期原文和本轮用户消息。Session 头部记录最近成功请求时间 `last_request_at`。每条消息携带默认值为 `true` 的 `is_visible` 展示标记，旧记录缺少该字段时仍按可见处理；标记只控制 Web UI 展示，不会从完整会话上下文中删除消息。当前 turn 仅在 `AgentRunner` 成功返回完整结果后原子保存，失败或取消不会留下半截历史。对于 `source=cron` 和异步 `source=subagent` 的内部 turn，本轮只有最后一条 `AIMessage` 可见，其余新增消息隐藏；其他来源默认全部展示。
+- workspace 下的 JSONL Session 持久化、逐次模型调用的预算检查和按需摘要压缩。每轮从配置目录读取提示词模板，再加载 workspace Skills 并追加召回的长期记忆。会话摘要以独立的 `HumanMessage` 放在系统提示词之后，随后是近期原文和本轮用户消息。Session 头部记录最近成功请求时间 `last_request_at`。每条消息携带默认值为 `true` 的 `is_visible` 展示标记，旧记录缺少该字段时仍按可见处理；标记只控制 Web UI 展示，不会从完整会话上下文中删除消息。当前 turn 仅在 `AgentRunner` 成功返回完整结果后原子保存，失败或取消不会留下半截历史。对于 `source=cron` 和异步 `source=subagent` 的内部 turn，本轮只有最后一条 `AIMessage` 可见，其余新增消息隐藏；其他来源默认全部展示。
 - Session 级持续目标：`GoalState` 独立持久化；`/goal <objective>` 或普通模式下的 `create_goal` 工具保存目标后，都会在同一 session 中投递一次基于当前上下文的目标 turn。`create_goal` 仅负责创建与调度确认，实际目标执行由后续内部消息完成；目标模式中的 `update_goal` 可更新或停止当前目标。目标达到 `max_iterations` 时，会先持久化完整工具批次，再通过内部 continuation 继续执行，并受每个目标的续跑上限约束；中间结果不会发送给用户。目标仅在返回非空文本时标记为 `completed`，空结果和执行异常标记为 `failed`；运行期间的普通用户输入按 session 合并并在工具调用安全点注入当前 Runner，不会并发启动第二个 Runner；`/goal status` 可查询状态，`/goal stop` 会取消 active goal 及其正在执行的目标 turn，进行中的目标会阻止 `/new` 重置会话。
 - 长期记忆使用工作区 SQLite 库。已保存的用户轮次在后台逐个整理，偏好、事实和决策支持更正、撤回与来源核验。通过 `/memory` 查看当前有效条目。
 - workspace Skills：静态 Skill 发现、always-active 指令、`$skill-name` 当前请求激活和环境依赖可用性检查。
@@ -37,7 +37,8 @@ HTTP API 的 `POST /v1/messages` 为了返回当前请求的响应，会直接�
 - `.nanobot/nanobot.json` 是本地后端 Agent 的完整配置，包含 Provider API key、QQ 凭据、`workspace`、日志、`agent` 预算、`cron` 时区、`tools`、`channel`、`mcp.servers` 与本地 HTTP API 设置。新建的本地文件会被 Git 忽略；首次配置可从 `.nanobot/nanobot.example.json` 复制。若旧仓库已跟踪该文件，先执行 `git rm --cached .nanobot/nanobot.json` 再提交，不要提交真实凭据。
 
   Provider 凭据位于 `provider.api_key`；`provider.request_timeout_seconds` 限制单次 Provider 请求尝试，`provider.max_retries` 控制 transient failure 的最大重试次数（默认 2）；Tavily Search 使用 `tools.web_search.tavily_api_key`；QQ Channel 使用 `channel.qq.app_id`、`channel.qq.secret` 与 `channel.qq.allow_from`（字符串列表）。启动时只解析、校验并创建 `channel.default` 指向的 Channel：例如默认使用 `websocket` 时，QQ 配置可以尚未填写；切换默认 Channel 前再补全目标 Channel 的配置即可。
-- workspace 是 Agent 可操作与存储运行时数据的范围。Session、长期记忆和记忆事件默认写入 workspace，项目的 `/.nanobot/workspace/` 已被 Git 忽略。
+- 用户在 `nanobot.json` 同一目录维护 `AGENTS.md`（行为约定）、`SOUL.md`（表达风格）和 `USER.md`（可选用户档案）。每轮读取最新内容，缺失或空白的文件会跳过。`--workspace` 只切换工作区，配置目录必须位于工作区之外。
+- workspace 是内置文件工具与运行时数据使用的目录。Session、长期记忆和记忆事件默认写入 workspace，项目的 `/.nanobot/workspace/` 已被 Git 忽略。
 
 不要把 API key、QQ secret、Session 内容或 workspace 运行时数据提交到仓库。
 

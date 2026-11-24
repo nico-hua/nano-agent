@@ -57,6 +57,7 @@ def load_nanobot_config(
     selected_channel_config = file_config.channel.default_config()
 
     return NanobotConfig(
+        config_dir=path.resolve().parent,
         workspace=workspace,
         context_window_tokens=file_config.agent.context_window_tokens,
         compaction_threshold_tokens=file_config.agent.compaction_threshold_tokens,

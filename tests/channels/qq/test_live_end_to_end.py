@@ -120,7 +120,7 @@ class QQDeepSeekEndToEndLiveTest(unittest.IsolatedAsyncioTestCase):
             provider=provider,
             tool_registry=ToolRegistry((self._weather,)),
             session_manager=self._sessions,
-            context_builder=ContextBuilder(config.workspace),
+            context_builder=ContextBuilder(config.workspace, config_dir=config.config_dir),
             message_bus=self._bus,
         )
         self._loop_task: asyncio.Task[None] | None = None

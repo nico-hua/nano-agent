@@ -354,6 +354,7 @@ class NanobotConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     provider: ProviderConfig
+    config_dir: Path | None = None
     workspace: Path | None = None
     context_window_tokens: int = Field(default=128_000, gt=0)
     compaction_threshold_tokens: int = Field(default=64_000, gt=0)

@@ -78,6 +78,7 @@ class ConfigLoaderTest(unittest.TestCase):
             config = load_nanobot_config(config_path)
 
         self.assertEqual(config.workspace, config_path.parent / "workspace")
+        self.assertEqual(config.config_dir, config_path.resolve().parent)
         self.assertEqual(config.context_window_tokens, 512)
         self.assertEqual(config.compaction_threshold_tokens, 192)
         self.assertEqual(config.compaction_recent_tokens, 96)
