@@ -54,6 +54,14 @@ HTTP API 的 `POST /v1/messages` 为了返回当前请求的响应，会直接�
 
 搜索和附近消息仅展示可见的用户与助手正文。读取结果会发送给当前模型并作为工具结果保存在本轮会话中。单次搜索最多检查 100 个会话文件，单文件上限 2 MiB，支持不超过 512 字符的会话 ID。搜索结果中的 `partial: true` 表示扫描覆盖不全。实现细节见 [会话检索架构](docs/ARCHITECTURE.md#会话检索)。
 
+## 长期记忆召回
+
+安装中文分词依赖 `python -m pip install jieba==0.42.1`。关键词索引和查询共用 jieba 搜索模式，文件名和代码标识也支持完整匹配。
+
+在 `.nanobot/nanobot.json` 中填写示例配置的 `memory.embedding.api_key` 即可启用语义召回。示例使用阿里云百炼北京地域的 `text-embedding-v4`。其他地域使用对应的 `api_base` 和密钥。聊天模型与向量服务分别配置。省略 `memory.embedding` 或将其密钥留空时，使用本地关键词和用户偏好。
+
+启用后，后台将有效记忆的正文发送到配置的 embeddings 服务建立索引。普通用户轮次按需发送当前查询，向量服务超时时使用本地关键词结果。通过 `/memory` 可查看全部有效条目与来源。
+
 ## Skills
 
 Skill 位于 `<workspace>/skills/<skill_name>/SKILL.md`。普通 Skill 只作为可用能力摘要提供；用户可在当前消息中使用 `$skill-name` 注入其正文。标记为 `always: true` 的可用 Skill 会在每轮请求中自动注入。

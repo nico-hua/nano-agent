@@ -7,6 +7,7 @@ from .base import (
     ProviderTimeoutError,
     TokenUsage,
 )
+from .embeddings import EmbeddingProvider, OpenAICompatEmbeddingProvider
 from .factory import ProviderFactory, create_default_provider_factory
 from .messages import (
     AIMessage,
@@ -25,6 +26,8 @@ __all__ = [
     "AnthropicCompatProvider",
     "BaseMessage",
     "HumanMessage",
+    "EmbeddingProvider",
+    "OpenAICompatEmbeddingProvider",
     "LLMProvider",
     "LLMResponse",
     "Message",

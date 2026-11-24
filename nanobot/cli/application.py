@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +23,12 @@ from ..config import (
 )
 from ..cron import CronCallback, CronMessagePublisher, CronService
 from ..mcp import MCPProvider
-from ..memory import MemoryConsolidator, MemoryStore
-from ..providers import LLMProvider, create_default_provider_factory
+from ..memory import MemoryConsolidator, MemoryRecall, MemoryStore
+from ..providers import (
+    LLMProvider,
+    OpenAICompatEmbeddingProvider,
+    create_default_provider_factory,
+)
 from ..session import SessionCompactor, SessionManager
 from ..subagent import SubagentManager
 from ..tools import ToolContext, ToolLoader, ToolRegistry
@@ -80,7 +85,6 @@ class Application:
         self._config = config
         provider_factory = provider_factory or create_default_provider_factory().create
         channel_factory = channel_factory or create_default_channel_factory().create
-        agent_loop_factory = agent_loop_factory or _create_agent_loop
         cron_service_factory = cron_service_factory or (
             lambda callback, workspace: CronService(
                 callback,
@@ -137,6 +141,13 @@ class Application:
         self._mcp_provider = mcp_provider_factory(
             self._tool_registry,
             config.mcp_servers,
+        )
+        embedding = config.memory.embedding
+        self._embedding_provider = (
+            OpenAICompatEmbeddingProvider(embedding) if embedding and embedding.api_key else None
+        )
+        agent_loop_factory = agent_loop_factory or partial(
+            _create_agent_loop, memory_recall=MemoryRecall(self._memory_store, self._embedding_provider),
         )
         self._agent_loop = agent_loop_factory(
             AgentRunner(self._session_compactor),
@@ -323,6 +334,7 @@ class Application:
                 (self._cancel_agent_task, "Application failed while cancelling the AgentLoop task"),
                 (self._agent_loop.close, "Application failed while closing AgentLoop background tasks"),
                 (self._mcp_provider.close, "Application failed while closing MCP connections"),
+                (self._close_embedding_provider, "Application failed while closing the embedding provider"),
             )
             if cancellation is None:
                 cancellation = remaining_cancellation
@@ -332,6 +344,10 @@ class Application:
                 raise cancellation
             self._started = False
             logger.info("Application stopped")
+
+    async def _close_embedding_provider(self) -> None:
+        if self._embedding_provider is not None:
+            await self._embedding_provider.close()
 
     async def _cancel_agent_task(self) -> None:
         task = self._agent_task
@@ -402,6 +418,8 @@ def _create_agent_loop(
     message_bus: MessageBus,
     subagent_manager: SubagentManager,
     cron_service: CronService,
+    *,
+    memory_recall: MemoryRecall,
 ) -> AgentLoop:
     return AgentLoop(
         runner,
@@ -412,6 +430,7 @@ def _create_agent_loop(
         message_bus=message_bus,
         session_compactor=session_compactor,
         memory_store=memory_store,
+        memory_recall=memory_recall,
         memory_consolidator=memory_consolidator,
         subagent_manager=subagent_manager,
         cron_service=cron_service,

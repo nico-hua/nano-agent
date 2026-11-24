@@ -109,6 +109,25 @@ class ProviderConfig(ProviderSettingsConfig):
         return value
 
 
+class EmbeddingConfig(BaseModel):
+    """Optional OpenAI-compatible endpoint for workspace memory."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    type: Literal["openai_compat"] = "openai_compat"
+    api_base: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    api_key: str = Field(default="", repr=False)
+    request_timeout_seconds: float = Field(default=5.0, gt=0, le=600)
+    max_retries: int = Field(default=0, ge=0)
+
+
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    embedding: EmbeddingConfig | None = None
+
+
 class QQChannelConfig(BaseModel):
     """Credentials and sender allow-list for one QQ channel."""
 
@@ -323,6 +342,7 @@ class NanobotFileConfig(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
     provider: ProviderSettingsConfig
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     channel: ChannelConfig = Field(default_factory=ChannelConfig)
     mcp: MCPConfig = Field(default_factory=MCPConfig)
@@ -341,6 +361,7 @@ class NanobotConfig(BaseModel):
     cron_timezone: str = "Asia/Shanghai"
     api: ApiConfig = Field(default_factory=ApiConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     default_channel: str = "qq"
     websocket: WebSocketChannelConfig | None = None

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from ..bus import InboundMessage, MessageBus, OutboundMessage
-from ..memory import MemoryConsolidator, MemoryEventConsumer, MemoryStore
+from ..memory import MemoryConsolidator, MemoryEventConsumer, MemoryRecall, MemoryStore
 from ..providers import (
     AIMessage,
     BaseMessage,
@@ -80,6 +80,7 @@ class AgentLoop:
         cron_service: CronService | None = None,
         max_iterations: int = 30,
         max_goal_continuations: int = DEFAULT_MAX_GOAL_CONTINUATIONS,
+        memory_recall: MemoryRecall | None = None,
     ) -> None:
         if not isinstance(runner, AgentRunner):
             raise TypeError("AgentLoop requires an AgentRunner")
@@ -129,8 +130,9 @@ class AgentLoop:
         self._session_manager = session_manager
         self._context_builder = context_builder
         self._message_bus = message_bus
+        self._memory_recall = memory_recall or MemoryRecall(memory_store or MemoryStore(session_manager.workspace))
         self._memory_events = (
-            MemoryEventConsumer(memory_store, memory_consolidator)
+            MemoryEventConsumer(memory_store, memory_consolidator, self._memory_recall)
             if memory_store is not None and memory_consolidator is not None
             else None
         )
@@ -503,8 +505,11 @@ class AgentLoop:
                 if history != session.messages:
                     # Legacy system messages change source positions when removed.
                     session = replace(session, messages=history, summary=None, summary_until=0)
+                memory = ""
+                if inbound.metadata.get("source") not in {"cron", "subagent", "goal"}:
+                    memory = await self._memory_recall.recall(current_message.content)
                 request_messages = self._context_builder.build_request_messages(
-                    history[session.summary_until:], current_message, summary=session.summary,
+                    history[session.summary_until:], current_message, summary=session.summary, memory=memory,
                 )
                 blocked_tool_names = _blocked_tool_names(is_goal_turn)
 

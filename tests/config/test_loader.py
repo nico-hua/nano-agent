@@ -32,6 +32,10 @@ class ConfigLoaderTest(unittest.TestCase):
                             "port": 8100,
                             "request_timeout_seconds": 15,
                         },
+                        "memory": {"embedding": {
+                            "type": "openai_compat", "model": "text-embedding-v4",
+                            "api_base": "https://example.test/v1", "api_key": "embedding-test-key",
+                        }},
                         "tools": {
                             "web_search": {
                                 "tavily_api_key": "test-tavily-key",
@@ -77,6 +81,8 @@ class ConfigLoaderTest(unittest.TestCase):
         self.assertEqual(config.context_window_tokens, 512)
         self.assertEqual(config.compaction_threshold_tokens, 192)
         self.assertEqual(config.compaction_recent_tokens, 96)
+        self.assertEqual(config.memory.embedding.model, "text-embedding-v4")
+        self.assertEqual(config.memory.embedding.api_key, "embedding-test-key")
         self.assertEqual(config.cron_timezone, "UTC")
         self.assertTrue(config.api.enabled)
         self.assertEqual(config.api.port, 8100)

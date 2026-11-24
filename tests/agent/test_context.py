@@ -15,8 +15,6 @@ from nanobot.providers import (
     ToolCallRequest,
     ToolMessage,
 )
-from nanobot.memory import MemoryStore
-from tests.memory.fixtures import seed
 from nanobot.session import Session
 
 
@@ -55,9 +53,8 @@ class ContextBuilderTest(unittest.TestCase):
     def test_places_memory_after_workspace_and_skill_sections(self) -> None:
         self._write("AGENTS.md", "Workspace rules.")
         self._write_skill("guide", "---\nname: guide\ndescription: A guide.\n---\nSkill body.\n")
-        self._write_memory("Current preference.")
         messages = ContextBuilder(self._workspace).build_request_messages(
-            (), HumanMessage(content="Use $guide."),
+            (), HumanMessage(content="Use $guide."), memory="- [decision] Current preference.",
         )
 
         prompt = messages[0].content
@@ -85,9 +82,8 @@ class ContextBuilderTest(unittest.TestCase):
 
     def test_includes_long_term_memory_after_workspace_context(self) -> None:
         self._write("USER.md", "The user prefers Chinese.")
-        self._write_memory("Remember the user prefers concise answers.")
 
-        prompt = ContextBuilder(self._workspace).build_system_prompt()
+        prompt = ContextBuilder(self._workspace).build_system_prompt(memory="Remember the user prefers concise answers.")
 
         self.assertIn("## Long-term Memory", prompt)
         self.assertIn("Remember the user prefers concise answers.", prompt)
@@ -98,13 +94,11 @@ class ContextBuilderTest(unittest.TestCase):
 
         self.assertNotIn("## Long-term Memory", builder.build_system_prompt())
 
-    def test_reloads_long_term_memory_for_each_system_prompt(self) -> None:
-        self._write_memory("First memory.")
+    def test_uses_only_the_supplied_memory_for_each_system_prompt(self) -> None:
         builder = ContextBuilder(self._workspace)
 
-        first_prompt = builder.build_system_prompt()
-        seed(MemoryStore(self._workspace), "Second memory.", replace_id=1)
-        second_prompt = builder.build_system_prompt()
+        first_prompt = builder.build_system_prompt(memory="First memory.")
+        second_prompt = builder.build_system_prompt(memory="Second memory.")
 
         self.assertIn("First memory.", first_prompt)
         self.assertIn("Second memory.", second_prompt)
@@ -195,6 +189,7 @@ class ContextBuilderTest(unittest.TestCase):
         messages = ContextBuilder(self._workspace).build_request_messages(
             session.messages,
             HumanMessage(content="Current question."),
+            memory="Persistent user preference.",
         )
 
         self.assertEqual(session.messages, original_messages)
@@ -373,7 +368,6 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertNotIn("broken", messages[0].content)
 
     def test_long_term_memory_does_not_modify_session_messages(self) -> None:
-        self._write_memory("Persistent user preference.")
         session = Session.create("memory-test").with_messages(
             (HumanMessage(content="Previous question."),)
         )
@@ -382,6 +376,7 @@ class ContextBuilderTest(unittest.TestCase):
         messages = ContextBuilder(self._workspace).build_request_messages(
             session.messages,
             HumanMessage(content="Current question."),
+            memory="Persistent user preference.",
         )
 
         self.assertEqual(session.messages, original_messages)
@@ -459,9 +454,6 @@ class ContextBuilderTest(unittest.TestCase):
         path = self._workspace / filename
         path.write_text(content, encoding="utf-8")
         return path
-
-    def _write_memory(self, content: str) -> None:
-        seed(MemoryStore(self._workspace), content)
 
     def _write_skill(self, directory_name: str, content: str) -> Path:
         path = self._workspace / "skills" / directory_name / "SKILL.md"

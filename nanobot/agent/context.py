@@ -6,7 +6,6 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 
-from ..memory import MemoryStore
 from ..providers import BaseMessage, HumanMessage, SystemMessage
 from ..skills import SkillLoadError, SkillNotFoundError, SkillsLoader
 
@@ -43,10 +42,9 @@ class ContextBuilder:
         if not isinstance(workspace, (str, Path)):
             raise TypeError("ContextBuilder workspace must be a string or Path")
         self._workspace = Path(workspace).resolve()
-        self._memory_store = MemoryStore(self._workspace)
         self._skills_loader = SkillsLoader(self._workspace)
 
-    def build_system_prompt(self, *, user_content: str = "") -> str:
+    def build_system_prompt(self, *, user_content: str = "", memory: str = "") -> str:
         """Return a prompt built from the current workspace file contents."""
 
         sections = [
@@ -71,7 +69,6 @@ class ContextBuilder:
             active_skills = self._build_active_skill_context(user_content)
             if active_skills:
                 sections.append(active_skills)
-        memory = self._memory_store.read(token_budget=1024)
         if memory:
             sections.append(f"## Long-term Memory\n\n{memory}")
         return "\n\n".join(sections)
@@ -90,13 +87,14 @@ class ContextBuilder:
         current_message: HumanMessage,
         *,
         summary: str | None = None,
+        memory: str = "",
     ) -> tuple[BaseMessage, ...]:
         """Place the optional summary before the verbatim history and current request."""
 
         _validate_messages(history)
         if not isinstance(current_message, HumanMessage):
             raise TypeError("ContextBuilder current_message must be a HumanMessage")
-        system = SystemMessage(content=self.build_system_prompt(user_content=current_message.content))
+        system = SystemMessage(content=self.build_system_prompt(user_content=current_message.content, memory=memory))
         if summary:
             return (system, history_summary_message(summary), *history, current_message)
         return (system, *history, current_message)

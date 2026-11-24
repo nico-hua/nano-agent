@@ -7,6 +7,7 @@ import logging
 
 from ..providers import BaseMessage
 from .consolidator import MemoryConsolidationOutcome, MemoryConsolidator
+from .recall import MemoryRecall
 from .store import MemoryStore
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ class MemoryEventConsumer:
         self,
         store: MemoryStore,
         consolidator: MemoryConsolidator,
+        recall: MemoryRecall | None = None,
     ) -> None:
         if not isinstance(store, MemoryStore):
             raise TypeError("MemoryEventConsumer requires a MemoryStore")
@@ -27,6 +29,7 @@ class MemoryEventConsumer:
 
         self._store = store
         self._consolidator = consolidator
+        self._recall = recall
         self._task: asyncio.Task[None] | None = None
         self._wake_requested = False
         self._closed = False
@@ -83,10 +86,12 @@ class MemoryEventConsumer:
                 self._wake_requested = False
                 event = self._store.next_event()
                 if event is None:
-                    return
+                    break
                 outcome = await self._consolidator.consolidate_event(event)
                 if outcome is MemoryConsolidationOutcome.FAILED:
-                    return
+                    break
+            if self._recall is not None:
+                await self._recall.index_missing()
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import sqlite3
+import struct
 from collections.abc import Iterator, Sequence
 from contextlib import closing, contextmanager
 from pathlib import Path
@@ -20,14 +20,9 @@ from .models import (
     ReplaceMemory,
     RetractMemory,
 )
+from .recall import contains_credentials, keywords
 
 logger = logging.getLogger(__name__)
-
-# Exclude the whole turn so an assistant or tool echo cannot retain a detected secret.
-_CREDENTIAL = re.compile(
-    r"""(?i)\b(?:api[_-]?key|access[_-]?token|password|client[_-]?secret)[\\"']*\s*[:=]"""
-    r"|\bBearer\s+[a-z0-9._~+/=-]+|\bsk-[a-z0-9_-]{20,}|-----BEGIN[ A-Z]*PRIVATE KEY-----"
-)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory_events (
@@ -52,6 +47,13 @@ CREATE TABLE IF NOT EXISTS memories (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS active_content
     ON memories(scope, kind, text) WHERE status = 'active';
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    memory_id INTEGER NOT NULL REFERENCES memories(id),
+    model_key TEXT NOT NULL,
+    dimensions INTEGER NOT NULL,
+    vector BLOB NOT NULL,
+    PRIMARY KEY(memory_id, model_key)
+);
 """
 
 
@@ -70,6 +72,20 @@ class MemoryStore:
             db.execute("PRAGMA foreign_keys = ON")
             if not self._initialized:
                 db.executescript(_SCHEMA)
+                with db:
+                    db.execute("BEGIN IMMEDIATE")
+                    if db.execute("PRAGMA user_version").fetchone()[0] < 2:
+                        db.execute("""CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                            terms, tokenize = "unicode61 tokenchars '._'"
+                        )""")
+                        # Version 1 indexed Chinese bigrams. Re-tokenize only the lexical index.
+                        db.execute("DELETE FROM memories_fts")
+                        rows = db.execute("SELECT id, text FROM memories WHERE status = 'active'")
+                        db.executemany(
+                            "INSERT INTO memories_fts(rowid, terms) VALUES (?, ?)",
+                            ((row["id"], " ".join(keywords(row["text"]))) for row in rows),
+                        )
+                        db.execute("PRAGMA user_version = 2")
                 self._initialized = True
             with db:
                 yield db
@@ -81,7 +97,7 @@ class MemoryStore:
             raise ValueError("Memory events must not contain system messages")
         records = tuple(message_record(message) for message in messages if message.is_visible)
         snapshot = json.dumps(records, ensure_ascii=False)
-        if _CREDENTIAL.search(snapshot):
+        if contains_credentials(snapshot):
             logger.debug("Skipping a credential-bearing memory turn")
             return None
         with self._connect() as db:
@@ -107,11 +123,60 @@ class MemoryStore:
             return []
         with self._connect() as db:
             rows = db.execute("""
-                SELECT m.id, m.kind, m.text, e.session_key, m.message_offset, m.event_id
+                SELECT m.id, m.kind, m.scope, m.text, e.session_key, m.message_offset, m.event_id
                 FROM memories m JOIN memory_events e ON m.event_id = e.id
                 WHERE m.status = 'active' ORDER BY m.id DESC
             """)
             return [ActiveMemory(**row) for row in rows]
+
+    def search_keywords(self, query: str, limit: int = 20) -> list[int]:
+        terms = list(dict.fromkeys(keywords(query)))[:64]
+        if not terms or not self._path.exists():
+            return []
+        expression = " OR ".join(f'"{term}"' for term in terms)
+        identifiers = [term for term in terms if "." in term or "_" in term]
+        order = "rank, rowid DESC"
+        params = [expression]
+        if identifiers:
+            # Keep complete code identifiers ahead of matches on their individual words.
+            order = ("rowid IN (SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?) DESC, " + order)
+            params.append(" OR ".join(f'"{term}"' for term in identifiers))
+        with self._connect() as db:
+            rows = db.execute(
+                f"SELECT rowid FROM memories_fts WHERE memories_fts MATCH ? ORDER BY {order} LIMIT ?",
+                (*params, limit),
+            )
+            return [row[0] for row in rows]
+
+    def missing_embeddings(self, model_key: str, limit: int) -> list[tuple[int, str]]:
+        if not self._path.exists():
+            return []
+        with self._connect() as db:
+            rows = db.execute("""
+                SELECT m.id, m.text FROM memories m WHERE m.status = 'active'
+                AND NOT EXISTS (SELECT 1 FROM memory_embeddings e
+                                WHERE e.memory_id = m.id AND e.model_key = ?)
+                ORDER BY m.id LIMIT ?
+            """, (model_key, limit))
+            return [(row["id"], row["text"]) for row in rows]
+
+    def save_embeddings(self, model_key: str, ids: Sequence[int], vectors: Sequence[tuple[float, ...]]) -> None:
+        with self._connect() as db:
+            db.executemany("""
+                INSERT OR IGNORE INTO memory_embeddings(memory_id, model_key, dimensions, vector)
+                SELECT id, ?, ?, ? FROM memories WHERE id = ? AND status = 'active'
+            """, ((model_key, len(vec), struct.pack(f"<{len(vec)}f", *vec), memory_id)
+                  for memory_id, vec in zip(ids, vectors, strict=True)))
+
+    def active_vectors(self, model_key: str) -> dict[int, tuple[float, ...]]:
+        if not self._path.exists():
+            return {}
+        with self._connect() as db:
+            rows = db.execute("""
+                SELECT memory_id, dimensions, vector FROM memory_embeddings
+                JOIN memories ON memories.id = memory_id WHERE status = 'active' AND model_key = ?
+            """, (model_key,))
+            return {row["memory_id"]: struct.unpack(f"<{row['dimensions']}f", row["vector"]) for row in rows}
 
     def read(self, *, include_sources: bool = False, token_budget: int | None = None) -> str:
         """Render current entries newest first, retaining whole lines within the budget."""
@@ -156,6 +221,7 @@ class MemoryStore:
                     if change.target_id not in targets:
                         raise ValueError("Expected a distinct, active memory target")
                     targets.remove(change.target_id)
+                    db.execute("DELETE FROM memories_fts WHERE rowid = ?", (change.target_id,))
                     status = "retracted" if isinstance(change, RetractMemory) else "superseded"
                     db.execute("""
                         UPDATE memories SET status = ?, ended_event_id = ?, ended_message_offset = ?
@@ -168,6 +234,9 @@ class MemoryStore:
                         ON CONFLICT(scope, kind, text) WHERE status = 'active' DO NOTHING
                     """, (change.kind, change.scope, change.text, event.event_id, offset,
                           change.target_id if isinstance(change, ReplaceMemory) else None))
-                    if isinstance(change, ReplaceMemory) and not inserted.rowcount:
+                    if inserted.rowcount:
+                        db.execute("INSERT INTO memories_fts(rowid, terms) VALUES (?, ?)",
+                                   (inserted.lastrowid, " ".join(keywords(change.text))))
+                    elif isinstance(change, ReplaceMemory):
                         raise ValueError("Replacement duplicates another active memory")
             db.execute("UPDATE memory_events SET processed = 1 WHERE id = ?", (event.event_id,))

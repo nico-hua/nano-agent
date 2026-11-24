@@ -646,9 +646,9 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             ContextBuilder(self._temporary_directory.name),
         )
 
-        await _dispatch(loop, "First question.", "test", "chat-1", "session-1")
+        await _dispatch(loop, "What is my preference?", "test", "chat-1", "session-1")
         seed(store, "New preference.", replace_id=1)
-        await _dispatch(loop, "Second question.", "test", "chat-1", "session-1")
+        await _dispatch(loop, "What is my preference?", "test", "chat-1", "session-1")
 
         first, second = (call[0].content for call in provider.complete_calls)
         header = "## Long-term Memory\n\n"

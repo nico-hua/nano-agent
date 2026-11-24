@@ -52,6 +52,7 @@ class MemoryChanges(_StrictModel):
 
 @dataclass(frozen=True)
 class ActiveMemory:
+    scope: str
     id: int
     kind: str
     text: str
