@@ -24,15 +24,18 @@ class _SessionHistoryTool(Tool):
     tool_parameters: tuple[ToolParameter, ...]
 
     def __init__(self, sessions: SessionManager) -> None:
+        """Bind the shared session manager to this history tool's declared schema."""
         super().__init__(self.tool_name, self.tool_description, self.tool_parameters)
         self._sessions = sessions
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Expose history lookup when a session manager is available."""
         return context.session_manager is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> Self:
+        """Construct the requested history tool using the runtime session manager."""
         if context.session_manager is None:
             raise ValueError("Session history tools require a SessionManager")
         return cls(context.session_manager)
@@ -51,6 +54,7 @@ class SearchSessionsTool(_SessionHistoryTool):
     )
 
     async def execute(self, query: str, limit: int = 5) -> ToolResult:
+        """Search stored conversations for matching visible messages and bounded excerpts."""
         if not isinstance(query, str) or not query.strip() or len(query) > 256:
             return _tool_error("query must contain 1 to 256 characters of search text.")
         if type(limit) is not int or not 1 <= limit <= 10:
@@ -94,6 +98,7 @@ class ReadSessionTool(_SessionHistoryTool):
         message_index: int | None = None,
         limit: int = 6,
     ) -> ToolResult:
+        """Read a window around a source index from the current or a stored session."""
         if (
             not isinstance(session_id, str)
             or not session_id.strip()
@@ -124,8 +129,10 @@ class ReadSessionTool(_SessionHistoryTool):
 
 
 def _json_result(payload: dict[str, object]) -> ToolResult:
+    """Encode the history result as compact JSON while preserving Unicode text."""
     return ToolResult(content=json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Return a failed history lookup with the supplied user-facing reason."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)

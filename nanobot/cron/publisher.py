@@ -22,6 +22,7 @@ class CronMessagePublisher:
     """Publish one route-aware Cron task through the shared MessageBus."""
 
     def __init__(self, message_bus: MessageBus) -> None:
+        """Bind scheduled task delivery to the agent's inbound message bus."""
         if not isinstance(message_bus, MessageBus):
             raise TypeError("CronMessagePublisher requires a MessageBus")
         self._message_bus = message_bus
@@ -60,12 +61,14 @@ def cron_task_to_inbound_message(task: CronTask) -> InboundMessage:
 
 
 def _required_task_field(value: str | None, name: str) -> str:
+    """Require a nonblank routing field before publishing a scheduled turn."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Cron task requires a non-empty {name}")
     return value
 
 
 def _optional_session_key(value: str) -> str:
+    """Require a string session key while allowing the empty routing default."""
     if not isinstance(value, str):
         raise ValueError("Cron task requires a string session_key")  # noqa: TRY004
     return value

@@ -79,11 +79,13 @@ class _ReadableHTMLParser(HTMLParser):
     _SKIPPED_TAGS = frozenset({"noscript", "script", "style", "svg", "template"})
 
     def __init__(self) -> None:
+        """Initialize text accumulation and nesting state for ignored HTML elements."""
         super().__init__(convert_charrefs=True)
         self._parts: list[str] = []
         self._skipped_tag_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        """Track ignored regions and add text boundaries for block elements."""
         del attrs
         normalized_tag = tag.casefold()
         if normalized_tag in self._SKIPPED_TAGS:
@@ -93,6 +95,7 @@ class _ReadableHTMLParser(HTMLParser):
             self._parts.append("\n")
 
     def handle_endtag(self, tag: str) -> None:
+        """Leave ignored regions and mark text boundaries at closing block elements."""
         normalized_tag = tag.casefold()
         if normalized_tag in self._SKIPPED_TAGS:
             self._skipped_tag_depth = max(0, self._skipped_tag_depth - 1)
@@ -101,10 +104,12 @@ class _ReadableHTMLParser(HTMLParser):
             self._parts.append("\n")
 
     def handle_data(self, data: str) -> None:
+        """Accumulate character data only while in a readable region."""
         if self._skipped_tag_depth == 0:
             self._parts.append(data)
 
     def text(self) -> str:
+        """Collapse inline whitespace and discard empty lines in the extracted text."""
         lines = [" ".join(line.split()) for line in "".join(self._parts).splitlines()]
         return "\n".join(line for line in lines if line)
 
@@ -128,6 +133,7 @@ class WebFetchTool(Tool):
         max_response_bytes: int = MAX_RESPONSE_BYTES,
         max_text_chars: int = MAX_TEXT_CHARS,
     ) -> None:
+        """Configure bounded HTTP fetching and its session and address-resolution dependencies."""
         if (
             isinstance(timeout_seconds, bool)
             or not isinstance(timeout_seconds, int)
@@ -309,6 +315,7 @@ class WebFetchTool(Tool):
 
 
 def _create_fetch_session(*, timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSession:
+    """Open a fetch client with the requested timeout and tool-specific user agent."""
     return aiohttp.ClientSession(
         timeout=timeout,
         headers={"User-Agent": "Nanobot web_fetch"},
@@ -316,12 +323,14 @@ def _create_fetch_session(*, timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSe
 
 
 async def _resolve_host_addresses(host: str, port: int) -> tuple[str, ...]:
+    """Resolve a hostname asynchronously and deduplicate its network addresses."""
     loop = asyncio.get_running_loop()
     records = await loop.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     return tuple(sorted({record[4][0] for record in records}))
 
 
 def _is_global_address(address: str) -> bool:
+    """Determine whether a resolved address is globally routable."""
     try:
         return ipaddress.ip_address(address).is_global
     except ValueError:
@@ -332,6 +341,7 @@ async def _read_bounded_body(
     content: _ResponseContent,
     maximum_bytes: int,
 ) -> bytes:
+    """Read response bytes incrementally and stop if the configured size bound is exceeded."""
     chunks: list[bytes] = []
     total = 0
     while True:
@@ -345,12 +355,14 @@ async def _read_bounded_body(
 
 
 def _content_type(value: object) -> str:
+    """Extract the normalized media type without its parameters."""
     if not isinstance(value, str):
         return ""
     return value.split(";", maxsplit=1)[0].strip().casefold()
 
 
 def _is_supported_text_content_type(content_type: str) -> bool:
+    """Recognize response types that can be treated as text by the fetch tool."""
     return (
         not content_type
         or content_type.startswith("text/")
@@ -364,6 +376,7 @@ def _decode_response_text(
     *,
     is_html: bool,
 ) -> str:
+    """Decode bytes using the declared charset, HTML metadata or the UTF-8 fallback."""
     charset = _charset_from_header(content_type_header)
     if charset is None and is_html:
         charset = _charset_from_html(body)
@@ -371,6 +384,7 @@ def _decode_response_text(
 
 
 def _charset_from_header(content_type_header: object) -> str | None:
+    """Extract a charset parameter from a Content-Type header when present."""
     if not isinstance(content_type_header, str):
         return None
     match = _HEADER_CHARSET_PATTERN.search(content_type_header)
@@ -378,6 +392,7 @@ def _charset_from_header(content_type_header: object) -> str | None:
 
 
 def _charset_from_html(body: bytes) -> str | None:
+    """Look for a charset declaration in the first 4096 bytes of HTML."""
     match = _META_CHARSET_PATTERN.search(body[:4096])
     if match is None:
         return None
@@ -385,6 +400,7 @@ def _charset_from_html(body: bytes) -> str | None:
 
 
 def _extract_html_text(html: str) -> str:
+    """Parse HTML into readable text using the tool's whitespace and tag handling."""
     parser = _ReadableHTMLParser()
     parser.feed(html)
     parser.close()
@@ -392,6 +408,7 @@ def _extract_html_text(html: str) -> str:
 
 
 def _truncate_text(text: str, maximum_characters: int) -> tuple[str, bool]:
+    """Limit returned text and report whether a truncation notice was added."""
     if len(text) <= maximum_characters:
         return text, False
     return (
@@ -408,6 +425,7 @@ def _success_result(
     text: str,
     truncated: bool,
 ) -> ToolResult:
+    """Format fetch metadata and extracted content into a successful tool result."""
     content = "\n".join(
         (
             f"Final URL: {final_url}",
@@ -423,6 +441,7 @@ def _success_result(
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Represent an expected web tool failure with the supplied user-facing reason."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)
 
 
@@ -443,6 +462,7 @@ class WebSearchTool(Tool):
         session_factory: SessionFactory | None = None,
         timeout_seconds: int = REQUEST_TIMEOUT_SECONDS,
     ) -> None:
+        """Configure Tavily search credentials and the HTTP session factory."""
         if not isinstance(tavily_api_key, str):
             raise TypeError("WebSearchTool tavily_api_key must be a string")
         if (
@@ -547,16 +567,19 @@ class WebSearchTool(Tool):
 
 
 def _create_search_session(*, timeout: aiohttp.ClientTimeout) -> aiohttp.ClientSession:
+    """Open the search client with the supplied request timeout."""
     return aiohttp.ClientSession(timeout=timeout)
 
 
 def _normalize_search_query(query: object) -> str | ToolResult:
+    """Require nonblank query text and trim surrounding whitespace."""
     if not isinstance(query, str) or not query.strip():
         return _tool_error("query must be a non-empty string")
     return query.strip()
 
 
 def _is_valid_search_result_limit(value: object) -> bool:
+    """Check that the requested count is an integer within the search result limit."""
     return (
         isinstance(value, int)
         and not isinstance(value, bool)
@@ -568,6 +591,7 @@ def _format_search_results(
     response_payload: object,
     maximum_results: int,
 ) -> ToolResult:
+    """Validate the search response and format usable titles, URLs and excerpts."""
     if not isinstance(response_payload, Mapping):
         return _tool_error("Tavily returned an invalid response format")
 
@@ -601,6 +625,7 @@ def _format_search_results(
 
 
 def _required_result_text(value: object) -> str | None:
+    """Normalize required search result text and discard missing or blank values."""
     if not isinstance(value, str):
         return None
     normalized = " ".join(value.split())
@@ -608,6 +633,7 @@ def _required_result_text(value: object) -> str | None:
 
 
 def _search_summary_text(value: object) -> str:
+    """Bound the text included in a search result summary and mark truncation."""
     if not isinstance(value, str):
         return "(No summary returned.)"
     summary = " ".join(value.split())

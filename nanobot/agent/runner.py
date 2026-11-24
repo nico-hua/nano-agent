@@ -55,6 +55,7 @@ class AgentRunSpec:
     session: Session | None = None
 
     def __post_init__(self) -> None:
+        """Validate the run specification and freeze its sequence inputs for the run."""
         if not isinstance(self.messages, Sequence) or not all(
             isinstance(message, BaseMessage) for message in self.messages
         ):
@@ -114,6 +115,7 @@ class AgentRunner:
     """Run provider completions and ordered tool-call batches to a response boundary."""
 
     def __init__(self, compactor: SessionCompactor | None = None) -> None:
+        """Attach the optional compactor used before model requests."""
         self._compactor = compactor
 
     async def run(self, spec: AgentRunSpec) -> AgentRunResult:
@@ -272,6 +274,7 @@ def _combine_token_usage(
     current: TokenUsage | None,
     response_usage: TokenUsage | None,
 ) -> TokenUsage | None:
+    """Accumulate usage across model responses that report token counts."""
     if response_usage is None:
         return current
     if current is None:
@@ -306,6 +309,7 @@ async def _execute_tool_batch(
     """Run adjacent parallelizable calls together between serial calls."""
 
     def can_run_in_parallel(tool_call: ToolCallRequest) -> bool:
+        """Check that a registered tool permits parallel execution and is available in this run."""
         tool = spec.tool_registry.get(tool_call.name)
         return (
             tool_call.name not in blocked_tool_names
@@ -343,6 +347,7 @@ async def _execute_parallel_tool_calls(
     *,
     streaming: bool,
 ) -> list[str]:
+    """Execute adjacent parallel calls concurrently while collecting results in request order."""
     for tool_call in tool_calls:
         logger.info("Executing requested tool (name=%s)", tool_call.name)
         if streaming:
@@ -373,6 +378,7 @@ async def _execute_serial_tool_call(
     *,
     streaming: bool,
 ) -> str:
+    """Run a single call at its sequence position, honoring the run's blocked tools."""
     if tool_call.name in blocked_tool_names:
         logger.warning("Blocked requested tool (name=%s)", tool_call.name)
         return (

@@ -34,6 +34,7 @@ class JsonlSessionStorage:
     """Store each complete session in one atomically replaced JSONL file."""
 
     def __init__(self, directory: str | Path) -> None:
+        """Prepare the directory used for JSONL session files and bounded history reads."""
         self._directory = Path(directory)
         self._history_file_lock = Lock()
         if self._directory.exists() and not self._directory.is_dir():
@@ -142,10 +143,12 @@ class JsonlSessionStorage:
             yield None
 
     def _path_for(self, session_key: str) -> Path:
+        """Map the session key to a stable hashed filename within the storage directory."""
         digest = hashlib.sha256(session_key.encode("utf-8")).hexdigest()
         return self._directory / f"{digest}.jsonl"
 
     def _load_history_path(self, path: Path, max_bytes: int) -> tuple[Session, str]:
+        """Read a bounded snapshot and derive its revision from those same bytes."""
         # On Windows a read handle can prevent an atomic replace or delete.
         with self._history_file_lock:
             if not stat.S_ISREG(path.lstat().st_mode):
@@ -161,12 +164,14 @@ class JsonlSessionStorage:
         return session, hashlib.sha256(content).hexdigest()
 
     def _load_path(self, path: Path) -> Session:
+        """Read a JSONL file and reconstruct the session from its header and message records."""
         with path.open(encoding="utf-8") as file:
             records = _parse_records(path, file)
         return _session_from_records(path, records)
 
 
 def _session_from_records(path: Path, records: list[dict[str, Any]]) -> Session:
+    """Validate the session header and restore its metadata and conversation messages."""
     if not records or records[0].get("type") != "session":
         raise ValueError(f"Invalid session file: {path.name}")
 
@@ -184,6 +189,7 @@ def _session_from_records(path: Path, records: list[dict[str, Any]]) -> Session:
 
 
 def _serialize_session(session: Session) -> str:
+    """Encode the header and ordered message records as a JSONL session document."""
     records = [
         {
             "type": "session",
@@ -215,6 +221,7 @@ def _serialize_session(session: Session) -> str:
 
 
 def _message_to_record(message: BaseMessage) -> dict[str, Any]:
+    """Serialize a message with its visibility and role-specific tool metadata."""
     record: dict[str, Any] = {
         "type": "message",
         "role": message.role,
@@ -238,6 +245,7 @@ def _message_to_record(message: BaseMessage) -> dict[str, Any]:
 
 
 def _parse_records(path: Path, lines: Iterable[str]) -> list[dict[str, Any]]:
+    """Parse JSON object records from the session file in their original order."""
     records: list[dict[str, Any]] = []
     for line_number, line in enumerate(lines, start=1):
         try:
@@ -251,6 +259,7 @@ def _parse_records(path: Path, lines: Iterable[str]) -> list[dict[str, Any]]:
 
 
 def _message_from_record(record: Mapping[str, Any]) -> BaseMessage:
+    """Decode a stored message according to its role and restore its visibility."""
     if record.get("type") != "message":
         raise ValueError("Invalid session message record")
 
@@ -280,6 +289,7 @@ def _message_from_record(record: Mapping[str, Any]) -> BaseMessage:
 
 
 def _tool_call_from_record(record: Any) -> ToolCallRequest:
+    """Validate the call ID, tool name and argument mapping from a persisted request."""
     if not isinstance(record, Mapping):
         raise TypeError("Tool call must be an object")
     arguments = record.get("arguments")
@@ -293,6 +303,7 @@ def _tool_call_from_record(record: Any) -> ToolCallRequest:
 
 
 def _required_text(record: Mapping[str, Any], name: str) -> str:
+    """Require a nonblank string for an identifying field in a session record."""
     value = _required_string(record, name)
     if not value.strip():
         raise ValueError(f"Session record {name} must be a non-empty string")
@@ -300,6 +311,7 @@ def _required_text(record: Mapping[str, Any], name: str) -> str:
 
 
 def _required_string(record: Mapping[str, Any], name: str) -> str:
+    """Read a required string while permitting empty message content."""
     value = record.get(name)
     if not isinstance(value, str):
         raise TypeError(f"Session record {name} must be a string")
@@ -307,6 +319,7 @@ def _required_string(record: Mapping[str, Any], name: str) -> str:
 
 
 def _optional_summary(record: Mapping[str, Any]) -> str | None:
+    """Read an optional saved summary from the session header."""
     value = record.get("summary")
     if value is None:
         return None
@@ -318,6 +331,7 @@ def _optional_summary(record: Mapping[str, Any]) -> str | None:
 
 
 def _optional_visibility(record: Mapping[str, Any]) -> bool:
+    """Read the display flag, treating messages written without one as visible."""
     value = record.get("is_visible", True)
     if not isinstance(value, bool):
         raise TypeError("Session record is_visible must be a boolean")
@@ -325,6 +339,7 @@ def _optional_visibility(record: Mapping[str, Any]) -> bool:
 
 
 def _optional_summary_until(record: Mapping[str, Any]) -> int:
+    """Read the stored summary boundary, defaulting to the start of the history."""
     value = record.get("summary_until", 0)
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError("Session record summary_until must be an integer")
@@ -332,6 +347,7 @@ def _optional_summary_until(record: Mapping[str, Any]) -> int:
 
 
 def _optional_goal_state(record: Mapping[str, Any]) -> GoalState | None:
+    """Restore the optional persistent goal from its serialized representation."""
     value = record.get("goal_state")
     if value is None:
         return None
@@ -341,6 +357,7 @@ def _optional_goal_state(record: Mapping[str, Any]) -> GoalState | None:
 
 
 def _timestamp_from_record(record: Mapping[str, Any], name: str) -> datetime:
+    """Decode a required timezone-aware ISO timestamp from a record."""
     value = _required_text(record, name)
     try:
         timestamp = datetime.fromisoformat(value)
@@ -355,6 +372,7 @@ def _optional_timestamp_from_record(
     record: Mapping[str, Any],
     name: str,
 ) -> datetime | None:
+    """Return the decoded timestamp when the optional field has a value."""
     if record.get(name) is None:
         return None
     return _timestamp_from_record(record, name)

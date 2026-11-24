@@ -16,6 +16,7 @@ class SessionManager:
     """Create, save, delete, and list sessions in a workspace's sessions directory."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind session persistence to the sessions directory of this workspace."""
         self._workspace = Path(workspace)
         self._storage = JsonlSessionStorage(self._workspace / "sessions")
 
@@ -123,6 +124,7 @@ class SessionManager:
 
 
 def _normalize_goal_objective(value: object) -> str:
+    """Trim a goal objective and reject empty or non-text requests."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError("目标描述不能为空。")
     return value.strip()

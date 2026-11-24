@@ -19,6 +19,7 @@ class CreateGoalTool(Tool):
         session_manager: SessionManager,
         message_bus: MessageBus,
     ) -> None:
+        """Bind goal persistence and the bus used to schedule the first goal turn."""
         if not isinstance(session_manager, SessionManager):
             raise TypeError("CreateGoalTool requires a SessionManager")
         if not isinstance(message_bus, MessageBus):
@@ -44,15 +45,18 @@ class CreateGoalTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Require both a session manager and a bus before exposing goal creation."""
         return context.session_manager is not None and context.message_bus is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> CreateGoalTool:
+        """Construct the tool from the services needed to save and schedule a goal."""
         if context.session_manager is None or context.message_bus is None:
             raise ValueError("CreateGoalTool requires a SessionManager and MessageBus")
         return cls(context.session_manager, context.message_bus)
 
     async def execute(self, objective: str) -> ToolResult:
+        """Create the goal for the current request and enqueue a separate goal turn."""
         request_context = get_request_context()
         if request_context is None:
             return _tool_error("create_goal requires an active request context")
@@ -90,6 +94,7 @@ class UpdateGoalTool(Tool):
     """Update or stop the active goal while its goal-mode turn is running."""
 
     def __init__(self, session_manager: SessionManager) -> None:
+        """Bind updates and cancellation to persisted session goals."""
         if not isinstance(session_manager, SessionManager):
             raise TypeError("UpdateGoalTool requires a SessionManager")
         self._session_manager = session_manager
@@ -116,10 +121,12 @@ class UpdateGoalTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Expose updates when the session manager is available."""
         return context.session_manager is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> UpdateGoalTool:
+        """Construct the update tool from the runtime session manager."""
         if context.session_manager is None:
             raise ValueError("UpdateGoalTool requires a SessionManager")
         return cls(context.session_manager)
@@ -129,6 +136,7 @@ class UpdateGoalTool(Tool):
         action: str,
         objective: str | None = None,
     ) -> ToolResult:
+        """Apply an objective change or cancellation to the active goal for this request."""
         request_context = get_request_context()
         if request_context is None:
             return _tool_error("update_goal requires an active request context")
@@ -168,6 +176,7 @@ class UpdateGoalTool(Tool):
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Return a failed goal operation with a user-facing reason."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)
 
 

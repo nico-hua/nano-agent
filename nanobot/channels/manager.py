@@ -20,6 +20,7 @@ class ChannelManager:
         message_bus: MessageBus,
         channels: Sequence[BaseChannel] = (),
     ) -> None:
+        """Register the supplied channels for dispatch on a shared message bus."""
         if not isinstance(message_bus, MessageBus):
             raise TypeError("ChannelManager requires a MessageBus")
 
@@ -98,6 +99,7 @@ class ChannelManager:
         logger.info("Channel manager stopped")
 
     async def _dispatch_outbound(self) -> None:
+        """Route outbound bus messages by channel and retain delivery errors for inspection."""
         while True:
             try:
                 message = await asyncio.wait_for(

@@ -71,6 +71,7 @@ class CommandRouter:
         cancel_active_turn: Callable[[str], bool | Awaitable[bool]] | None = None,
         cancel_goal_turn: Callable[[str], bool] | None = None,
     ) -> None:
+        """Register built-in commands and bind the workspace services available to their handlers."""
         if not isinstance(session_manager, SessionManager):
             raise TypeError("CommandRouter requires a SessionManager")
         if session_compactor is not None and not isinstance(
@@ -228,6 +229,7 @@ class CommandRouter:
             return self._reply(message, "命令执行失败，请稍后重试。")
 
     async def _handle_new(self, context: CommandContext) -> str:
+        """Clear short-term session history when the current goal permits a reset."""
         session = _require_session(context)
         if session.goal_state is not None and session.goal_state.status == "active":
             return (
@@ -238,6 +240,7 @@ class CommandRouter:
         return "已开始新的会话，当前会话的短期历史已清空。"
 
     async def _handle_stop(self, context: CommandContext) -> str:
+        """Report whether cancellation was requested for an active turn."""
         cancelled = context.cancel_active_turn()
         if inspect.isawaitable(cancelled):
             cancelled = await cancelled
@@ -246,6 +249,7 @@ class CommandRouter:
         return "当前会话没有正在执行的请求。"
 
     async def _handle_help(self, context: CommandContext) -> str:
+        """Return the command listing for the current dispatcher."""
         del context
         return self._help_text()
 
@@ -294,6 +298,7 @@ class CommandRouter:
         return f"已创建目标：{goal.objective}\n\n已开始执行目标。"
 
     async def _handle_compact(self, context: CommandContext) -> str:
+        """Request explicit session compaction and report its outcome to the user."""
         session = _require_session(context)
         compactor = context.session_compactor
         if compactor is None:
@@ -305,6 +310,7 @@ class CommandRouter:
         return "当前会话历史已整理为摘要。"
 
     async def _handle_memory(self, context: CommandContext) -> str:
+        """Render active workspace memories with sources, bounded by the command output limit."""
         store = context.memory_store
         if store is None:
             return "当前未配置长期记忆。"
@@ -344,6 +350,7 @@ class CommandRouter:
         return f"已请求取消子 Agent 任务 {task.task_id}。"
 
     def _help_text(self) -> str:
+        """Build user-facing help from the currently registered commands."""
         lines = ["可用命令："]
         lines.extend(
             f"- /{name}：{registered.description}"
@@ -353,6 +360,7 @@ class CommandRouter:
 
     @staticmethod
     def _reply(message: InboundMessage, content: str) -> OutboundMessage:
+        """Route a command reply back to the originating channel and session."""
         return OutboundMessage(
             channel=message.channel,
             chat_id=message.chat_id,
@@ -364,6 +372,7 @@ class CommandRouter:
 
 
 def _normalize_command_name(name: str) -> str:
+    """Canonicalize the command name before registration or lookup."""
     if not isinstance(name, str):
         raise TypeError("Command name must be a string")
     normalized = name.strip().lower().removeprefix("/")
@@ -373,6 +382,7 @@ def _normalize_command_name(name: str) -> str:
 
 
 def _require_session(context: CommandContext) -> Session:
+    """Fail if a session-dependent handler is invoked without a loaded session."""
     if context.session is None:
         raise RuntimeError("Command requires a session")
     return context.session

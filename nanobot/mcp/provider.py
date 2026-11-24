@@ -32,6 +32,7 @@ class MCPConnectionResult:
 
     @property
     def success(self) -> bool:
+        """Indicate whether server initialization completed without a recorded error."""
         return self.error is None
 
 
@@ -51,6 +52,7 @@ class MCPProvider:
         *,
         session_factory: Callable[[Any, Any], Any] = ClientSession,
     ) -> None:
+        """Bind the tool registry and track the sessions owned by this provider."""
         if not isinstance(registry, ToolRegistry):
             raise TypeError("MCPProvider requires a ToolRegistry")
 
@@ -165,6 +167,7 @@ class MCPProvider:
         self,
         config: MCPServerConfig,
     ) -> AsyncIterator[tuple[Any, Any]]:
+        """Open the configured MCP transport and yield the protocol read and write streams."""
         if config.type == "stdio":
             assert config.command is not None
             parameters = StdioServerParameters(
@@ -196,6 +199,7 @@ class MCPProvider:
 def _server_configs(
     servers: Mapping[str, MCPServerConfig],
 ) -> dict[str, MCPServerConfig]:
+    """Validate the server configuration collection and take a local copy."""
     if not isinstance(servers, Mapping):
         raise TypeError("MCPProvider servers must be a mapping")
     if not all(

@@ -76,6 +76,7 @@ class ReadFileTool(Tool):
     MAX_LIMIT = 1000
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind UTF-8 file reads to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "ReadFileTool")
 
         super().__init__(
@@ -103,10 +104,12 @@ class ReadFileTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer file reads when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> ReadFileTool:
+        """Create the read tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("ReadFileTool requires a workspace")
         return cls(context.workspace)
@@ -157,6 +160,7 @@ class WriteFileTool(Tool):
     """Create or fully overwrite a text file inside one workspace."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind creation and whole-file replacement to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "WriteFileTool")
 
         super().__init__(
@@ -180,10 +184,12 @@ class WriteFileTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer whole-file writes when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> WriteFileTool:
+        """Create the write tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("WriteFileTool requires a workspace")
         return cls(context.workspace)
@@ -211,6 +217,7 @@ class EditFileTool(Tool):
     """Replace one exact text occurrence in an existing workspace file."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind exact text replacements to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "EditFileTool")
 
         super().__init__(
@@ -240,10 +247,12 @@ class EditFileTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer exact file edits when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> EditFileTool:
+        """Create the edit tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("EditFileTool requires a workspace")
         return cls(context.workspace)
@@ -299,6 +308,7 @@ class ApplyPatchTool(Tool):
     """Apply a strict, workspace-contained line patch without shell commands."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind structured multi-file patches to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "ApplyPatchTool")
         super().__init__(
             name="apply_patch",
@@ -321,10 +331,12 @@ class ApplyPatchTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer patch operations when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> ApplyPatchTool:
+        """Create the patch tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("ApplyPatchTool requires a workspace")
         return cls(context.workspace)
@@ -373,6 +385,7 @@ class ListDirTool(Tool):
     MAX_LIMIT = 1000
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind directory listings to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "ListDirTool")
 
         super().__init__(
@@ -399,10 +412,12 @@ class ListDirTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer directory listings when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> ListDirTool:
+        """Create the listing tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("ListDirTool requires a workspace")
         return cls(context.workspace)
@@ -447,11 +462,13 @@ class ListDirTool(Tool):
 
 
 def _write_utf8_file(path: Path, content: str) -> None:
+    """Create missing parent directories and write the supplied UTF-8 text."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
 
 
 def _replace_utf8_file(path: Path, content: str) -> None:
+    """Stage replacement text beside the target and atomically replace the file."""
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -521,6 +538,7 @@ def _parse_patch(patch: str) -> tuple[_PatchOperation, ...]:
 
 
 def _parse_patch_header(header: str, line_number: int) -> tuple[str, str]:
+    """Read the operation kind and target path from a patch file header."""
     for prefix, kind in (
         ("*** Add File: ", "add"),
         ("*** Update File: ", "update"),
@@ -535,6 +553,7 @@ def _parse_patch_header(header: str, line_number: int) -> tuple[str, str]:
 
 
 def _parse_added_file_lines(lines: list[str], start_line: int) -> tuple[str, ...]:
+    """Validate addition lines and strip their leading patch markers."""
     added_lines: list[str] = []
     for offset, line in enumerate(lines):
         if not line.startswith("+"):
@@ -546,6 +565,7 @@ def _parse_added_file_lines(lines: list[str], start_line: int) -> tuple[str, ...
 
 
 def _parse_update_hunks(lines: list[str], start_line: int) -> tuple[_PatchHunk, ...]:
+    """Group update lines into hunks and reject malformed hunk structure."""
     if not lines:
         raise _PatchError(f"Update File section requires at least one hunk (line {start_line})")
 
@@ -744,6 +764,7 @@ def _find_hunk_positions(lines: list[str], old_lines: tuple[str, ...]) -> list[i
 
 
 def _join_added_file_lines(lines: tuple[str, ...]) -> str:
+    """Build new file content with a trailing newline when the patch supplies lines."""
     if not lines:
         return ""
     return "\n".join(lines) + "\n"
@@ -813,6 +834,7 @@ def _create_missing_patch_directories(workspace: Path, parent: Path) -> list[Pat
 
 
 def _stage_utf8_file(directory: Path, content: str) -> Path:
+    """Write replacement content to a temporary sibling before changing any target."""
     temporary_path: Path | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -832,6 +854,7 @@ def _stage_utf8_file(directory: Path, content: str) -> Path:
 
 
 def _reserve_temporary_path(directory: Path) -> Path:
+    """Reserve a unique temporary file in the requested directory for later use."""
     with tempfile.NamedTemporaryFile(dir=directory, delete=False) as temporary_file:
         return Path(temporary_file.name)
 
@@ -861,6 +884,7 @@ def _rollback_patch_changes(staged_changes: list[_StagedPatchChange]) -> None:
 
 
 def _remove_empty_patch_directories(directories: list[Path]) -> None:
+    """Remove directories created for a patch when rollback leaves them empty."""
     for directory in sorted(
         set(directories),
         key=lambda path: len(path.parts),
@@ -873,22 +897,26 @@ def _remove_empty_patch_directories(directories: list[Path]) -> None:
 
 
 def _cleanup_staged_paths(staged_changes: list[_StagedPatchChange]) -> None:
+    """Discard replacement files that remain in staging after patch processing."""
     for staged_change in staged_changes:
         _unlink_if_exists(staged_change.staged_path)
 
 
 def _cleanup_backup_paths(staged_changes: list[_StagedPatchChange]) -> None:
+    """Remove temporary backup files after patch processing."""
     for staged_change in staged_changes:
         _unlink_if_exists(staged_change.backup_path)
 
 
 def _cleanup_unmoved_backup_paths(staged_changes: list[_StagedPatchChange]) -> None:
+    """Remove unused backup placeholders while preserving backups that hold originals."""
     for staged_change in staged_changes:
         if not staged_change.original_moved:
             _unlink_if_exists(staged_change.backup_path)
 
 
 def _unlink_if_exists(path: Path | None) -> None:
+    """Perform best-effort cleanup of an optional temporary path."""
     if path is None:
         return
     try:
@@ -914,9 +942,11 @@ def _format_patch_summary(changes: tuple[_PreparedPatchChange, ...]) -> str:
 
 
 def _list_directory(path: Path, recursive: bool, limit: int) -> list[str]:
+    """Collect a bounded directory listing in stable order, with optional recursion."""
     entries: list[str] = []
 
     def visit(directory: Path) -> bool:
+        """Append typed entries and signal when traversal has reached the listing limit."""
         children = sorted(
             directory.iterdir(),
             key=lambda child: (child.name.casefold(), child.name),
@@ -954,6 +984,7 @@ class FindFilesTool(Tool):
     MAX_LIMIT = 1000
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind name and glob searches to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "FindFilesTool")
         super().__init__(
             name="find_files",
@@ -988,10 +1019,12 @@ class FindFilesTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer filename search when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> FindFilesTool:
+        """Create the filename search tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("FindFilesTool requires a workspace")
         return cls(context.workspace)
@@ -1091,6 +1124,7 @@ def _is_absolute_path(value: str) -> bool:
 
 
 def _has_parent_segment(value: str) -> bool:
+    """Detect a parent-directory component with either Windows or POSIX separators."""
     return ".." in value.replace("\\", "/").split("/")
 
 
@@ -1115,6 +1149,7 @@ def _workspace_files(workspace: Path, directory: Path) -> list[Path]:
     files: list[Path] = []
 
     def visit(current: Path) -> None:
+        """Collect searchable files while skipping links and checking resolved workspace containment."""
         children = sorted(
             current.iterdir(),
             key=lambda child: (child.name.casefold(), child.name),
@@ -1152,6 +1187,7 @@ def _matches_glob(path: str, pattern_parts: tuple[str, ...]) -> bool:
 
     @cache
     def matches(path_index: int, pattern_index: int) -> bool:
+        """Match remaining path segments against the glob, including recursive double-star segments."""
         if pattern_index == len(pattern_parts):
             return path_index == len(path_parts)
 
@@ -1180,6 +1216,7 @@ class GrepTool(Tool):
     MAX_OUTPUT_CHARACTERS = 20_000
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind bounded regular-expression searches to the resolved workspace."""
         self.workspace = resolve_workspace(workspace, "GrepTool")
         super().__init__(
             name="grep",
@@ -1225,10 +1262,12 @@ class GrepTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer content search when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> GrepTool:
+        """Create the grep tool with the runtime workspace as its root."""
         if context.workspace is None:
             raise ValueError("GrepTool requires a workspace")
         return cls(context.workspace)
@@ -1388,6 +1427,7 @@ def _truncate_matched_line(line: str, max_line_characters: int) -> str:
 
 
 def _format_grep_result(matches: list[str], output_truncated: bool) -> str:
+    """Render matching lines and indicate when the result set was truncated."""
     if not matches:
         return _OUTPUT_TRUNCATION_SUFFIX if output_truncated else "(no matches)"
     content = "\n".join(matches)

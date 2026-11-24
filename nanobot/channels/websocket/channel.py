@@ -33,6 +33,7 @@ class WebSocketChannel(BaseChannel):
         config: WebSocketChannelConfig,
         auth: AuthConfig | None = None,
     ) -> None:
+        """Configure the listener and initialize per-connection authentication and session routing."""
         super().__init__(name, message_bus)
         if not isinstance(config, WebSocketChannelConfig):
             raise TypeError("WebSocketChannel requires a WebSocketChannelConfig")
@@ -230,6 +231,7 @@ class WebSocketChannel(BaseChannel):
             raise
 
     async def _handle_connection(self, request: web.Request) -> web.WebSocketResponse:
+        """Serve frames for one connection and release its routing state on disconnect."""
         connection = web.WebSocketResponse(max_msg_size=_MAX_MESSAGE_BYTES)
         await connection.prepare(request)
         task = asyncio.current_task()
@@ -274,6 +276,7 @@ class WebSocketChannel(BaseChannel):
         connection: web.WebSocketResponse,
         text: str,
     ) -> None:
+        """Decode and validate a client event before handing an accepted message to the bus."""
         try:
             payload = json.loads(text)
         except json.JSONDecodeError:
@@ -358,6 +361,7 @@ class WebSocketChannel(BaseChannel):
             )
 
     def _requires_authentication(self, connection: web.WebSocketResponse) -> bool:
+        """Check whether this connection still needs to authenticate."""
         return self._auth.enabled and connection not in self._authenticated_connections
 
     async def _authenticate_connection(
@@ -388,6 +392,7 @@ class WebSocketChannel(BaseChannel):
         self,
         connection: web.WebSocketResponse,
     ) -> None:
+        """Send the authentication error and close the socket with a policy violation."""
         await self._send_error(
             connection,
             "authentication_required",
@@ -396,6 +401,7 @@ class WebSocketChannel(BaseChannel):
         await connection.close(code=WSCloseCode.POLICY_VIOLATION)
 
     def _resolve_session_id(self, value: object, chat_id: str) -> str | None:
+        """Use the client's session ID or derive a default from the channel and chat."""
         if value is None:
             return f"{self.name}:{chat_id.strip()}"
         if not isinstance(value, str):
@@ -407,6 +413,7 @@ class WebSocketChannel(BaseChannel):
         connection: web.WebSocketResponse,
         session_id: str,
     ) -> tuple[str, str] | None:
+        """Bind a socket to its session or return an error if another live socket owns it."""
         current_session = self._connection_sessions.get(connection)
         if current_session == session_id:
             return None
@@ -435,11 +442,13 @@ class WebSocketChannel(BaseChannel):
         return None
 
     async def _close_connections(self) -> None:
+        """Close tracked WebSocket connections as part of listener shutdown."""
         for connection in tuple(self._connection_sessions):
             if not connection.closed:
                 await connection.close(code=WSCloseCode.GOING_AWAY)
 
     async def _cancel_connection_tasks(self) -> None:
+        """Cancel outstanding connection handlers while allowing the current task to finish."""
         current_task = asyncio.current_task()
         tasks = tuple(
             task
@@ -452,6 +461,7 @@ class WebSocketChannel(BaseChannel):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     def _remove_connection(self, connection: web.WebSocketResponse) -> None:
+        """Discard the connection's authentication state and release its session binding."""
         self._authenticated_connections.discard(connection)
         self._connection_routes.pop(connection, None)
         session_id = self._connection_sessions.pop(connection, None)
@@ -490,6 +500,7 @@ class WebSocketChannel(BaseChannel):
         code: str,
         message: str,
     ) -> None:
+        """Send a protocol error carrying the machine-readable code and display message."""
         await self._send_event(
             connection,
             {
@@ -504,6 +515,7 @@ class WebSocketChannel(BaseChannel):
         connection: web.WebSocketResponse,
         event: dict[str, Any],
     ) -> None:
+        """Serialize one protocol event to its destination socket with Unicode text intact."""
         await connection.send_json(
             event,
             dumps=lambda value: json.dumps(value, ensure_ascii=False),

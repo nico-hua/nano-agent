@@ -16,6 +16,7 @@ class SpawnTool(Tool):
     """Run a focused subagent task and return its final text to the main Agent."""
 
     def __init__(self, subagent_manager: SubagentManager) -> None:
+        """Bind delegated task execution to the runtime subagent manager."""
         if not isinstance(subagent_manager, SubagentManager):
             raise TypeError("SpawnTool requires a SubagentManager")
         self._subagent_manager = subagent_manager
@@ -45,10 +46,12 @@ class SpawnTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Expose delegation when a subagent manager is available."""
         return context.subagent_manager is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> SpawnTool:
+        """Construct the spawn tool with the manager that owns subagent tasks."""
         if context.subagent_manager is None:
             raise ValueError("SpawnTool requires a SubagentManager")
         return cls(context.subagent_manager)
@@ -101,4 +104,5 @@ class SpawnTool(Tool):
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Return a failed subagent operation with the supplied reason."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)

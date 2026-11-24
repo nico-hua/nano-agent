@@ -24,6 +24,7 @@ class Session:
     last_request_at: datetime | None = None
 
     def __post_init__(self) -> None:
+        """Validate the session identity, history, summary boundary and optional goal state."""
         _validate_session_key(self.key)
         _validate_timestamp("created_at", self.created_at)
         _validate_timestamp("updated_at", self.updated_at)
@@ -94,11 +95,13 @@ class Session:
 
 
 def _validate_session_key(key: str) -> None:
+    """Require a nonblank identifier before accessing session state."""
     if not isinstance(key, str) or not key.strip():
         raise ValueError("session key must be a non-empty string")
 
 
 def _validate_timestamp(name: str, value: datetime) -> None:
+    """Require a timezone-aware datetime for session timestamps."""
     if not isinstance(value, datetime):
         raise TypeError(f"{name} must be a datetime")
     if value.tzinfo is None:

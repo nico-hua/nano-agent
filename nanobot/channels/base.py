@@ -16,6 +16,7 @@ class BaseChannel(ABC):
     """Adapt one external channel to the internal message bus."""
 
     def __init__(self, name: str, message_bus: MessageBus) -> None:
+        """Validate the channel identity and bind it to the shared bus in the stopped state."""
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Channel name must be a non-empty string")
         if not isinstance(message_bus, MessageBus):
@@ -78,6 +79,7 @@ class BaseChannel(ABC):
         raise NotImplementedError
 
     def _validate_outbound_message(self, message: OutboundMessage) -> None:
+        """Require an outbound message addressed to this channel before delivery."""
         if not isinstance(message, OutboundMessage):
             raise TypeError("Channel send requires an OutboundMessage")
         if message.channel != self.name:

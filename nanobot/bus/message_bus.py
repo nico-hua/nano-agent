@@ -14,6 +14,7 @@ class MessageBus:
     """Publish and consume inbound and outbound messages in memory."""
 
     def __init__(self) -> None:
+        """Allocate independent asynchronous queues for inbound and outbound traffic."""
         self._inbound: asyncio.Queue[InboundMessage] = asyncio.Queue()
         self._outbound: asyncio.Queue[OutboundMessage] = asyncio.Queue()
         logger.debug("Message bus initialized")

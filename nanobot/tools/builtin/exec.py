@@ -21,6 +21,7 @@ class ExecTool(Tool):
     MAX_OUTPUT_CHARS = 8_000
 
     def __init__(self, workspace: str | Path) -> None:
+        """Bind shell execution to a validated workspace working directory."""
         self.workspace = resolve_workspace(workspace, "ExecTool")
 
         super().__init__(
@@ -48,10 +49,12 @@ class ExecTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Offer shell execution when a workspace is configured."""
         return context.workspace is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> ExecTool:
+        """Construct the shell tool using the runtime workspace."""
         if context.workspace is None:
             raise ValueError("ExecTool requires a workspace")
         return cls(context.workspace)
@@ -133,6 +136,7 @@ class ExecTool(Tool):
         )
 
     def _resolve_working_dir(self, working_dir: str | None) -> Path | ToolResult:
+        """Resolve the initial shell directory and require it to be inside the workspace."""
         if working_dir is None:
             return self.workspace
         if not isinstance(working_dir, str) or not working_dir.strip():
@@ -219,6 +223,7 @@ def _format_result(returncode: int | None, stdout: str, stderr: str) -> str:
 
 
 def _truncate_output(output: str) -> str:
+    """Limit captured output and reserve room for the truncation notice."""
     if len(output) <= ExecTool.MAX_OUTPUT_CHARS:
         return output
 

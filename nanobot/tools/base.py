@@ -32,6 +32,7 @@ class ToolParameter:
     required: bool = False
 
     def __post_init__(self) -> None:
+        """Validate the parameter name, type and required flag before exposing its schema."""
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("Tool parameter name must not be empty")
         if not isinstance(self.description, str) or not self.description.strip():
@@ -55,6 +56,7 @@ class Tool(ABC):
         description: str,
         parameters: Sequence[ToolParameter] = (),
     ) -> None:
+        """Bind the tool's public name, description and ordered parameter definitions."""
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Tool name must not be empty")
         if not isinstance(description, str) or not description.strip():

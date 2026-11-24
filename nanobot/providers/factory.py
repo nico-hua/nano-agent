@@ -16,6 +16,7 @@ class ProviderFactory:
     """Create LLM providers from registered provider type constructors."""
 
     def __init__(self, constructors: Mapping[str, ProviderConstructor] | None = None) -> None:
+        """Copy provider constructors into a registry local to this factory."""
         self._constructors = dict(constructors or {})
 
     def register(self, provider_type: str, constructor: ProviderConstructor) -> None:
@@ -48,14 +49,17 @@ def create_default_provider_factory() -> ProviderFactory:
 
 
 def _create_openai_compat_provider(config: ProviderConfig) -> LLMProvider:
+    """Create the OpenAI-compatible adapter with the resolved runtime settings."""
     return OpenAICompatProvider(**_provider_options(config))
 
 
 def _create_anthropic_compat_provider(config: ProviderConfig) -> LLMProvider:
+    """Create the Anthropic-compatible adapter with the resolved runtime settings."""
     return AnthropicCompatProvider(**_provider_options(config))
 
 
 def _provider_options(config: ProviderConfig) -> dict[str, str | int | float | None]:
+    """Extract the shared adapter options from the validated provider configuration."""
     return {
         "api_key": config.api_key,
         "api_base": config.api_base,

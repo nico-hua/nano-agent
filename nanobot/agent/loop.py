@@ -82,6 +82,7 @@ class AgentLoop:
         max_goal_continuations: int = DEFAULT_MAX_GOAL_CONTINUATIONS,
         memory_recall: MemoryRecall | None = None,
     ) -> None:
+        """Bind the runner, persistence and routing services and initialize per-session task state."""
         if not isinstance(runner, AgentRunner):
             raise TypeError("AgentLoop requires an AgentRunner")
         if not isinstance(provider, LLMProvider):
@@ -519,6 +520,7 @@ class AgentLoop:
                 if is_streaming and message_bus is not None:
 
                     async def publish_delta(chunk: str) -> None:
+                        """Forward a streamed text chunk with the routing metadata of its originating request."""
                         # Provider and runner await this callback, preserving
                         # chunk order all the way to the outbound queue.
                         await message_bus.publish_outbound(
@@ -532,6 +534,7 @@ class AgentLoop:
                     on_delta = publish_delta
 
                     async def publish_tool_call(tool_call: ToolCallRequest) -> None:
+                        """Notify the originating channel when the runner begins a tool call."""
                         # The runner awaits this callback before execution, so
                         # progress events retain their provider/tool order.
                         await message_bus.publish_outbound(
@@ -718,6 +721,7 @@ class AgentLoop:
         return saved_session
 
     def _lock_for(self, session_key: str) -> asyncio.Lock:
+        """Reuse one asynchronous lock per session to serialize history changes."""
         lock = self._session_locks.get(session_key)
         if lock is None:
             lock = asyncio.Lock()
@@ -731,6 +735,7 @@ class AgentLoop:
         *,
         inbound: InboundMessage | None = None,
     ) -> None:
+        """Keep a turn reachable for cancellation until its completion callback runs."""
         tasks = self._active_turn_tasks.setdefault(session_key, set())
         if inbound is not None and _is_streaming_message(inbound):
             self._streaming_turns[task] = inbound
@@ -742,6 +747,7 @@ class AgentLoop:
         )
 
     def _track_goal_turn_task(self, session_key: str, task: asyncio.Task[Any]) -> None:
+        """Track the task currently executing the goal for this session."""
         if self._goal_turn_tasks.get(session_key) is task:
             return
         self._goal_turn_tasks[session_key] = task
@@ -753,6 +759,7 @@ class AgentLoop:
         )
 
     def _untrack_turn_task(self, session_key: str, task: asyncio.Task[Any]) -> None:
+        """Release streaming and cancellation bookkeeping when a turn finishes."""
         self._streaming_turns.pop(task, None)
         tasks = self._active_turn_tasks.get(session_key)
         if tasks is None:
@@ -766,6 +773,7 @@ class AgentLoop:
         session_key: str,
         task: asyncio.Task[Any],
     ) -> None:
+        """Remove goal bookkeeping only when this task still owns the session slot."""
         if self._goal_turn_tasks.get(session_key) is task:
             self._goal_turn_tasks.pop(session_key, None)
             if not self._has_active_goal(session_key):
@@ -854,6 +862,7 @@ class AgentLoop:
         session_key: str,
         inbound: InboundMessage,
     ) -> None:
+        """Buffer a user update for delivery to the running goal."""
         queue = self._pending_user_messages.setdefault(session_key, asyncio.Queue())
         queue.put_nowait(inbound)
 
@@ -883,6 +892,7 @@ class AgentLoop:
         return (HumanMessage(content=_GOAL_INJECTION_TEMPLATE.format(messages=content)),)
 
     async def _cancel_active_turn(self, session_key: str) -> bool:
+        """Request cancellation of active session turns and discard their queued input."""
         # Do not let input collected for a cancelled goal leak into a later turn.
         self._pending_user_messages.pop(session_key, None)
         current_task = asyncio.current_task()
@@ -907,6 +917,7 @@ class AgentLoop:
         self,
         tasks: tuple[asyncio.Task[Any], ...],
     ) -> None:
+        """Close outstanding stream notifications for turns interrupted by cancellation."""
         if self._message_bus is None:
             return
         for task in tasks:
@@ -933,6 +944,7 @@ class AgentLoop:
                 logger.exception("Failed to publish a cancelled streaming turn")
 
     def _cancel_goal_turn(self, session_key: str) -> bool:
+        """Cancel the running goal task for the session and discard queued follow-ups."""
         self._pending_user_messages.pop(session_key, None)
         task = self._goal_turn_tasks.get(session_key)
         if task is None or task.done():
@@ -942,12 +954,14 @@ class AgentLoop:
         return True
 
     def _is_goal_mode(self, session_key: str) -> bool:
+        """Check both the running task and persisted state when routing a goal-mode message."""
         task = self._goal_turn_tasks.get(session_key)
         return (task is not None and not task.done()) or self._has_active_goal(
             session_key
         )
 
     def _has_active_goal(self, session_key: str) -> bool:
+        """Read the persisted goal status for this session."""
         goal = self._session_manager.get_or_create(session_key).goal_state
         return goal is not None and goal.status == "active"
 
@@ -1002,6 +1016,7 @@ class AgentLoop:
         session_key: str,
         status: Literal["completed", "failed"],
     ) -> None:
+        """Persist a terminal transition when the session has an active goal."""
         session = self._session_manager.get_or_create(session_key)
         updated_session = self._finish_active_goal_state(session, status)
         if updated_session is not session:
@@ -1012,6 +1027,7 @@ class AgentLoop:
         session: Session,
         status: Literal["completed", "failed"],
     ) -> Session:
+        """Return a session with the active goal finished using the supplied terminal status."""
         goal = session.goal_state
         if goal is None or goal.status != "active":
             return session
@@ -1019,10 +1035,12 @@ class AgentLoop:
 
 
 def _session_key(channel: str, chat_id: str, session_id: str) -> str:
+    """Prefer an explicit session ID and otherwise derive the key from channel and chat."""
     return session_id if session_id.strip() else f"{channel}:{chat_id}"
 
 
 def _require_command_reply(reply: OutboundMessage | None) -> OutboundMessage:
+    """Require a reply from a command path that promises an outbound response."""
     if reply is None:
         raise RuntimeError("CommandRouter did not return a command reply")
     return reply
@@ -1034,6 +1052,7 @@ def _outbound_message(
     *,
     metadata: Mapping[str, Any] | None = None,
 ) -> OutboundMessage:
+    """Construct a reply using the inbound message's routing identifiers."""
     return OutboundMessage(
         channel=inbound.channel,
         chat_id=inbound.chat_id,
@@ -1071,10 +1090,12 @@ def _messages_for_persistence(
 
 
 def _without_system_messages(messages: tuple[BaseMessage, ...]) -> tuple[BaseMessage, ...]:
+    """Remove system prompts before retaining conversation history."""
     return tuple(message for message in messages if not isinstance(message, SystemMessage))
 
 
 def _is_goal_message(inbound: InboundMessage) -> bool:
+    """Recognize a turn generated by the goal runtime from its source metadata."""
     return inbound.metadata.get("source") == "goal"
 
 
@@ -1085,6 +1106,7 @@ def _is_streaming_message(inbound: InboundMessage) -> bool:
 
 
 def _is_goal_continuation_message(inbound: InboundMessage) -> bool:
+    """Recognize an internal follow-up scheduled to continue an existing goal."""
     return (
         _is_goal_message(inbound)
         and inbound.metadata.get("goal_continuation") is True

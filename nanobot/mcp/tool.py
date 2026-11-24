@@ -26,6 +26,7 @@ class MCPToolWrapper(Tool):
         session: Any,
         tool_timeout: float,
     ) -> None:
+        """Adapt a discovered remote tool and its input schema to the local registry."""
         tool_name = _required_tool_name(mcp_tool)
         input_schema = _input_schema(mcp_tool)
         self.server_name = server_name
@@ -73,6 +74,7 @@ class MCPToolWrapper(Tool):
 
 
 def _required_tool_name(mcp_tool: Any) -> str:
+    """Require a usable remote tool name before constructing its local identifier."""
     name = getattr(mcp_tool, "name", None)
     if not isinstance(name, str) or not name.strip():
         raise ValueError("MCP tool name must be a non-empty string")
@@ -80,6 +82,7 @@ def _required_tool_name(mcp_tool: Any) -> str:
 
 
 def _input_schema(mcp_tool: Any) -> dict[str, Any]:
+    """Copy the remote input schema for use in the local tool definition."""
     input_schema = getattr(mcp_tool, "inputSchema", None)
     if not isinstance(input_schema, Mapping):
         raise ValueError("MCP tool inputSchema must be an object")  # noqa: TRY004
@@ -87,6 +90,7 @@ def _input_schema(mcp_tool: Any) -> dict[str, Any]:
 
 
 def _tool_description(mcp_tool: Any, tool_name: str) -> str:
+    """Use the server's description when available and otherwise describe the named tool."""
     description = getattr(mcp_tool, "description", None)
     if isinstance(description, str) and description.strip():
         return description
@@ -94,6 +98,7 @@ def _tool_description(mcp_tool: Any, tool_name: str) -> str:
 
 
 def _parameters_from_schema(input_schema: Mapping[str, Any]) -> tuple[ToolParameter, ...]:
+    """Translate object properties and required fields into local tool parameters."""
     properties = input_schema.get("properties")
     if not isinstance(properties, Mapping):
         return ()
@@ -122,15 +127,18 @@ def _parameters_from_schema(input_schema: Mapping[str, Any]) -> tuple[ToolParame
 
 
 def _wrapped_tool_name(server_name: str, tool_name: str) -> str:
+    """Namespace the remote tool name with its server to avoid registry collisions."""
     return f"mcp_{_sanitize_component(server_name)}_{_sanitize_component(tool_name)}"
 
 
 def _sanitize_component(value: str) -> str:
+    """Normalize a name component for use in a local MCP tool identifier."""
     normalized = re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower())
     return normalized.strip("_") or "tool"
 
 
 def _text_content(result: Any) -> str:
+    """Join text blocks from a remote response into the local tool's display content."""
     text_parts = [
         item.text
         for item in getattr(result, "content", ())
@@ -141,4 +149,5 @@ def _text_content(result: Any) -> str:
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Represent an MCP invocation failure using the registry's tool result convention."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)

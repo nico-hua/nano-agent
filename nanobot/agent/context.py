@@ -32,6 +32,7 @@ Current project workspace: {workspace}
 
 
 def history_summary_message(summary: str) -> HumanMessage:
+    """Wrap a saved summary as a distinct history message before the remaining conversation."""
     return HumanMessage(content=f"以下是之前的历史摘要：\n{summary}")
 
 
@@ -39,6 +40,7 @@ class ContextBuilder:
     """Read optional prompt templates alongside the configuration file."""
 
     def __init__(self, workspace: str | Path, *, config_dir: str | Path | None = None) -> None:
+        """Keep user-managed prompt templates outside the workspace used for Skills."""
         if not isinstance(workspace, (str, Path)):
             raise TypeError("ContextBuilder workspace must be a string or Path")
         self._workspace = Path(workspace).resolve()
@@ -103,6 +105,7 @@ class ContextBuilder:
         return (system, *history, current_message)
 
     def _read_optional_file(self, filename: str) -> str | None:
+        """Read a nonblank UTF-8 template from the configuration directory when available."""
         if self._config_dir is None:
             return None
         try:
@@ -216,6 +219,7 @@ class ContextBuilder:
 
 
 def _validate_messages(messages: Sequence[BaseMessage]) -> None:
+    """Require a sequence of provider-neutral messages before assembling request history."""
     if not isinstance(messages, Sequence) or not all(
         isinstance(message, BaseMessage) for message in messages
     ):

@@ -69,6 +69,7 @@ async def _run_application(
 
 
 def _create_parser() -> argparse.ArgumentParser:
+    """Define CLI options for selecting the configuration and overriding the workspace."""
     parser = argparse.ArgumentParser(description="Run the nanobot Agent application.")
     parser.add_argument(
         "--config",
@@ -96,6 +97,7 @@ def _install_signal_handlers(
             previous_handler = signal.getsignal(stop_signal)
 
             def request_stop(_signum: int, _frame: object) -> None:
+                """Translate a process stop signal into a request for orderly application shutdown."""
                 application.request_stop()
 
             signal.signal(stop_signal, request_stop)
@@ -109,6 +111,7 @@ def _install_signal_handlers(
             removers.append(lambda stop_signal=stop_signal: loop.remove_signal_handler(stop_signal))
 
     def uninstall() -> None:
+        """Remove installed signal handlers in reverse installation order."""
         for remove in reversed(removers):
             remove()
 

@@ -147,6 +147,7 @@ def is_transient_provider_error(error: Exception) -> bool:
 
 
 def _validate_request_settings(timeout_seconds: float, max_retries: int) -> None:
+    """Require a positive request timeout and a nonnegative retry count."""
     if (
         not isinstance(timeout_seconds, (int, float))
         or isinstance(timeout_seconds, bool)

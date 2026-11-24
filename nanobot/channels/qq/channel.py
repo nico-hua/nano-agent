@@ -37,6 +37,7 @@ class QQChannel(BaseChannel):
         *,
         client_factory: Callable[[QQChannel], Any] | None = None,
     ) -> None:
+        """Bind the QQ configuration and initialize the reply contexts for incoming chats."""
         super().__init__(name, message_bus)
         if not isinstance(config, QQChannelConfig):
             raise TypeError("QQChannel requires a QQChannelConfig")
@@ -162,6 +163,7 @@ class QQChannel(BaseChannel):
         sender_id: str,
         chat_id: str,
     ) -> InboundMessage | None:
+        """Apply the sender allowlist and publish an accepted QQ message with its reply context."""
         if not self.config.allows_sender(sender_id):
             logger.warning("Ignored QQ message from a sender outside the allow list")
             return None
@@ -190,6 +192,7 @@ class QQChannel(BaseChannel):
 
 
 def _create_botpy_client(channel: QQChannel) -> Any:
+    """Construct the SDK client that forwards private and group notifications to this channel."""
     try:
         import botpy
     except ImportError as exc:
@@ -199,9 +202,11 @@ def _create_botpy_client(channel: QQChannel) -> Any:
 
     class BotPyQQClient(botpy.Client):
         async def on_c2c_message_create(self, message: Any) -> None:
+            """Forward a private QQ message from the SDK to the channel adapter."""
             await channel.handle_c2c_message(message)
 
         async def on_group_at_message_create(self, message: Any) -> None:
+            """Forward a group mention from the SDK to the channel adapter."""
             await channel.handle_group_at_message(message)
 
     # qq-botpy enables a rotating ``botpy.log`` file by default.
@@ -213,15 +218,18 @@ def _create_botpy_client(channel: QQChannel) -> Any:
 
 
 def _context_key(message: InboundMessage | OutboundMessage) -> tuple[str, str, str]:
+    """Identify the QQ reply context by chat, sender and session."""
     return message.chat_id, message.sender_id, message.session_id
 
 
 def _required_text(value: Any, name: str) -> str:
+    """Require a nonblank text value from the QQ event."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{name} must be a non-empty string")
     return value
 
 
 def _metadata_text(metadata: Mapping[str, Any], name: str) -> str | None:
+    """Return usable text metadata or indicate that it is unavailable."""
     value = metadata.get(name)
     return value if isinstance(value, str) and value.strip() else None

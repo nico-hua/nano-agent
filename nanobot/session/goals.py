@@ -37,6 +37,7 @@ class GoalState:
     continuation_count: int = 0
 
     def __post_init__(self) -> None:
+        """Validate the goal status and the timestamps required for its lifecycle state."""
         if self.status not in {"active", "completed", "cancelled", "failed"}:
             raise ValueError(f"Unknown goal status: {self.status}")
         if not isinstance(self.objective, str) or not self.objective.strip():
@@ -152,6 +153,7 @@ def build_goal_continuation_content(objective: str) -> str:
 
 
 def _goal_status(value: object) -> GoalStatus:
+    """Decode a persisted goal status from the supported lifecycle values."""
     if not isinstance(value, str) or value not in {
         "active",
         "completed",
@@ -163,6 +165,7 @@ def _goal_status(value: object) -> GoalStatus:
 
 
 def _required_text(value: Mapping[str, Any], name: str) -> str:
+    """Read a nonblank text field from a stored goal record."""
     item = value.get(name)
     if not isinstance(item, str) or not item.strip():
         raise ValueError(f"Goal state {name} must be a non-empty string")
@@ -170,6 +173,7 @@ def _required_text(value: Mapping[str, Any], name: str) -> str:
 
 
 def _timestamp(value: Mapping[str, Any], name: str) -> datetime:
+    """Read and validate a timezone-aware timestamp from a goal record."""
     item = _required_text(value, name)
     try:
         timestamp = datetime.fromisoformat(item)
@@ -180,6 +184,7 @@ def _timestamp(value: Mapping[str, Any], name: str) -> datetime:
 
 
 def _optional_timestamp(value: Mapping[str, Any], name: str) -> datetime | None:
+    """Read a goal timestamp when present and retain the absent state otherwise."""
     item = value.get(name)
     if item is None:
         return None
@@ -198,6 +203,7 @@ def _continuation_count(value: Mapping[str, Any]) -> int:
 
 
 def _validate_timestamp(name: str, value: datetime) -> None:
+    """Require a timezone-aware datetime for goal lifecycle comparisons."""
     if not isinstance(value, datetime):
         raise TypeError(f"Goal {name} must be a datetime")
     if value.tzinfo is None:

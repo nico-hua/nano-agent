@@ -41,6 +41,7 @@ class ToolLoader:
         return tuple(registered_names)
 
     def _discover_tool_classes(self) -> tuple[type[Tool], ...]:
+        """Discover built-in tool classes and order them by class name for stable registration."""
         package = importlib.import_module(_BUILTIN_PACKAGE)
         package_paths = getattr(package, "__path__", None)
         if package_paths is None:

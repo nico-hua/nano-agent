@@ -49,6 +49,7 @@ class AnthropicCompatProvider(LLMProvider):
         response_schema_mode: str | None = None,
         client: Any | None = None,
     ) -> None:
+        """Configure the Anthropic client and delegate retry policy to the shared request wrapper."""
         self.api_base = api_base
         self._schema_mode = response_schema_mode or "json_schema"
         if self._schema_mode not in {"json_schema", "prompt"}:
@@ -77,6 +78,7 @@ class AnthropicCompatProvider(LLMProvider):
         *,
         response_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
+        """Request a complete response using the configured mode for an optional output schema."""
         if response_schema is not None and self._schema_mode == "prompt":
             messages = append_schema_instruction(messages, response_schema)
         request = self._build_request(messages, tools, max_tokens, temperature)
@@ -90,6 +92,7 @@ class AnthropicCompatProvider(LLMProvider):
         )
 
         async def request_once() -> LLMResponse:
+            """Send one prepared Messages API request and decode its final response."""
             response = await self._client.messages.create(**request)
             return _response_from_message(response)
 
@@ -107,6 +110,7 @@ class AnthropicCompatProvider(LLMProvider):
         temperature: float | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
+        """Forward streamed text and return the assembled response including tool calls."""
         request = self._build_request(messages, tools, max_tokens, temperature)
         logger.debug(
             "Anthropic-compatible streaming requested (model=%s, messages=%d, tools=%d)",
@@ -118,6 +122,7 @@ class AnthropicCompatProvider(LLMProvider):
         output_started = False
 
         async def consume_stream() -> LLMResponse:
+            """Consume one stream attempt and track whether text has reached the caller."""
             nonlocal output_started
             async with self._client.messages.stream(**request) as stream:
                 async for delta in stream.text_stream:
@@ -152,6 +157,7 @@ class AnthropicCompatProvider(LLMProvider):
         max_tokens: int | None,
         temperature: float | None,
     ) -> dict[str, Any]:
+        """Separate system content and encode conversation and tool definitions for the Messages API."""
         system_parts: list[str] = []
         request_messages: list[dict[str, Any]] = []
         for message in messages:
@@ -182,6 +188,7 @@ class AnthropicCompatProvider(LLMProvider):
 
 
 def _message_to_dict(message: BaseMessage) -> dict[str, Any]:
+    """Convert a conversation message to the corresponding Anthropic role and content blocks."""
     if isinstance(message, HumanMessage):
         return {"role": "user", "content": message.content}
 
@@ -219,6 +226,7 @@ def _message_to_dict(message: BaseMessage) -> dict[str, Any]:
 
 
 def _response_from_message(response: Any) -> LLMResponse:
+    """Collect text and tool-use blocks, stop reason and usage from the final message."""
     text_parts: list[str] = []
     tool_calls: list[ToolCallRequest] = []
     for block in getattr(response, "content", None) or ():
@@ -248,6 +256,7 @@ def _response_from_message(response: Any) -> LLMResponse:
 
 
 def _usage_from_message(usage: Any) -> TokenUsage | None:
+    """Translate Anthropic input and output token counts into provider-neutral usage."""
     if usage is None:
         return None
     prompt_tokens = getattr(usage, "input_tokens", None)

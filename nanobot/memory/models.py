@@ -26,6 +26,7 @@ class MemoryContent(_StrictModel):
     @field_validator("text")
     @classmethod
     def nonblank(cls, value: str) -> str:
+        """Strip surrounding whitespace and reject a memory with no remaining text."""
         if not value.strip():
             raise ValueError("Empty memory text")
         return value.strip()

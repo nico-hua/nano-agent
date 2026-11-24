@@ -59,6 +59,7 @@ def configure_logging_from_config(
 
 
 def _resolve_level(level: int | str) -> int:
+    """Resolve a logging level name or integer and reject invalid configuration values."""
     if isinstance(level, bool):
         raise TypeError("Logging level must be an integer or level name")
     if isinstance(level, int):

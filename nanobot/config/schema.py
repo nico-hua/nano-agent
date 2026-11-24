@@ -41,6 +41,7 @@ class ApiConfig(BaseModel):
     @field_validator("host")
     @classmethod
     def _reject_blank_host(cls, value: str) -> str:
+        """Require an explicit nonblank host for the HTTP listener."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -91,6 +92,7 @@ class ProviderSettingsConfig(BaseModel):
     @field_validator("api_base", "default_model")
     @classmethod
     def _reject_blank_values(cls, value: str) -> str:
+        """Reject whitespace-only provider endpoints and model names."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -104,6 +106,7 @@ class ProviderConfig(ProviderSettingsConfig):
     @field_validator("api_key")
     @classmethod
     def _reject_blank_api_key(cls, value: str) -> str:
+        """Require a usable API key for the resolved chat provider."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -141,6 +144,7 @@ class QQChannelConfig(BaseModel):
     @field_validator("app_id", "secret")
     @classmethod
     def _reject_blank_credentials(cls, value: str) -> str:
+        """Reject empty QQ application IDs and secrets."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -148,6 +152,7 @@ class QQChannelConfig(BaseModel):
     @field_validator("allow_from")
     @classmethod
     def _validate_allow_from(cls, value: list[str]) -> list[str]:
+        """Require nonblank sender IDs and allow a wildcard only as the sole entry."""
         if any(not sender_id.strip() for sender_id in value):
             raise ValueError("sender IDs must not be blank")
         if "*" in value and value != ["*"]:
@@ -172,6 +177,7 @@ class WebSocketChannelConfig(BaseModel):
     @field_validator("host")
     @classmethod
     def _reject_blank_host(cls, value: str) -> str:
+        """Require a nonblank bind address for the WebSocket listener."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -188,6 +194,7 @@ class AgentConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_compaction_budgets(self) -> AgentConfig:
+        """Keep the recent-history reserve below the threshold that triggers compaction."""
         if self.compaction_recent_tokens >= self.compaction_threshold_tokens:
             raise ValueError(
                 "compaction_recent_tokens must be less than compaction_threshold_tokens"
@@ -205,6 +212,7 @@ class CronConfig(BaseModel):
     @field_validator("timezone")
     @classmethod
     def _validate_timezone(cls, value: str) -> str:
+        """Validate the configured scheduler timezone against the local zone database."""
         return _validate_timezone(value)
 
 
@@ -245,6 +253,7 @@ class ChannelConfig(BaseModel):
     @field_validator("default")
     @classmethod
     def _reject_blank_default(cls, value: str) -> str:
+        """Require a nonblank default channel name."""
         if not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -287,6 +296,7 @@ class MCPServerConfig(BaseModel):
     @field_validator("command", "url")
     @classmethod
     def _reject_blank_connection_values(cls, value: str | None) -> str | None:
+        """Reject blank values for an explicitly configured MCP command or URL."""
         if value is not None and not value.strip():
             raise ValueError("must not be blank")
         return value
@@ -294,6 +304,7 @@ class MCPServerConfig(BaseModel):
     @field_validator("enabled_tools")
     @classmethod
     def _validate_enabled_tools(cls, value: list[str]) -> list[str]:
+        """Require nonblank tool names and allow a wildcard only as the sole selector."""
         if any(not name.strip() for name in value):
             raise ValueError("tool names must not be blank")
         if "*" in value and value != ["*"]:
@@ -302,6 +313,7 @@ class MCPServerConfig(BaseModel):
 
     @model_validator(mode="after")
     def _resolve_transport(self) -> MCPServerConfig:
+        """Infer the MCP transport when omitted and check its connection requirements."""
         if self.type is None:
             if self.command is not None:
                 self.type = "stdio"
@@ -371,6 +383,7 @@ class NanobotConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_compaction_budgets(self) -> NanobotConfig:
+        """Check the compaction threshold and retained history budget in the resolved configuration."""
         if self.compaction_recent_tokens >= self.compaction_threshold_tokens:
             raise ValueError(
                 "compaction_recent_tokens must be less than compaction_threshold_tokens"
@@ -380,10 +393,12 @@ class NanobotConfig(BaseModel):
     @field_validator("cron_timezone")
     @classmethod
     def _validate_cron_timezone(cls, value: str) -> str:
+        """Validate the timezone used by cron after configuration loading."""
         return _validate_timezone(value)
 
 
 def _validate_timezone(value: str) -> str:
+    """Require a nonblank, resolvable IANA timezone name."""
     if not value.strip():
         raise ValueError("must not be blank")
     try:

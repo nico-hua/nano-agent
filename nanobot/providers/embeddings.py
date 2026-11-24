@@ -23,6 +23,7 @@ class EmbeddingProvider(ABC):
 
 class OpenAICompatEmbeddingProvider(EmbeddingProvider):
     def __init__(self, config: EmbeddingConfig, *, client: AsyncOpenAI | None = None) -> None:
+        """Derive the vector-space key from protocol, endpoint and model and initialize the SDK client."""
         self.model = config.model
         identity = f"{config.type}\n{config.api_base.rstrip('/')}\n{config.model}"
         self.model_key = sha256(identity.encode()).hexdigest()
@@ -32,6 +33,7 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
         )
 
     async def embed(self, texts: Sequence[str]) -> list[tuple[float, ...]]:
+        """Return unit vectors in input order after checking indices, dimensions and finite lengths."""
         if not texts:
             return []
         try:
@@ -52,4 +54,5 @@ class OpenAICompatEmbeddingProvider(EmbeddingProvider):
             raise ProviderError("Embedding request failed or returned invalid vectors") from exc
 
     async def close(self) -> None:
+        """Close the asynchronous SDK client and release its connections."""
         await self._client.close()

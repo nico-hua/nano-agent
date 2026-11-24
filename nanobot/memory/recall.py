@@ -37,10 +37,12 @@ _CREDENTIAL = re.compile(
 )
 
 def contains_credentials(text: str) -> bool:
+    """Detect common credential patterns before retaining a turn or sending a query for embedding."""
     return bool(_CREDENTIAL.search(text))
 
 
 def keywords(text: str) -> list[str]:
+    """Generate shared index and query terms, including full code identifiers and their components."""
     terms = []
     for word in _WORDS.findall(text.casefold()):
         if word.isascii():
@@ -53,16 +55,19 @@ def keywords(text: str) -> list[str]:
 
 
 def _embedding_input(text: str) -> str:
+    """Limit input to 8192 UTF-8 bytes while retaining complete characters."""
     # Bound even a single long code block or a multi-byte query.
     return text.encode("utf-8")[:8192].decode("utf-8", errors="ignore")
 
 
 class MemoryRecall:
     def __init__(self, store: MemoryStore, provider: EmbeddingProvider | None = None) -> None:
+        """Use the workspace store for lexical recall and an optional provider for semantic recall."""
         self._store = store
         self._provider = provider
 
     async def index_missing(self) -> None:
+        """Backfill active entries for the current embedding model in batches until exhausted or unavailable."""
         provider = self._provider
         if provider is None:
             return
@@ -76,6 +81,7 @@ class MemoryRecall:
             self._store.save_embeddings(provider.model_key, ids, vectors)
 
     async def _semantic_hits(self, query: str) -> list[int]:
+        """Return active IDs ranked by cosine similarity in the configured model's vector space."""
         provider = self._provider
         if provider is None or contains_credentials(query):
             return []
@@ -96,6 +102,7 @@ class MemoryRecall:
         return [memory_id for _, memory_id in sorted(scores, reverse=True)[:_TOP_K]]
 
     async def recall(self, query: str, *, token_budget: int = 1024) -> str:
+        """Fill the prompt budget with user preferences and reciprocal-rank-fused lexical and semantic hits."""
         ranks: dict[int, float] = {}
         try:
             if keywords(query):

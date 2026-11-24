@@ -17,6 +17,7 @@ class CronTool(Tool):
     """Create, list, and remove scheduled tasks for the current session."""
 
     def __init__(self, cron_service: CronService, timezone: str) -> None:
+        """Bind the scheduler and default timezone for schedules created by this tool."""
         if not isinstance(cron_service, CronService):
             raise TypeError("CronTool requires a CronService")
         self._cron_service = cron_service
@@ -72,10 +73,12 @@ class CronTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Expose scheduling operations only when the cron service is available."""
         return context.cron_service is not None
 
     @classmethod
     def create(cls, context: ToolContext) -> CronTool:
+        """Construct the tool using the runtime scheduler and its configured timezone."""
         if context.cron_service is None:
             raise ValueError("CronTool requires a CronService")
         return cls(context.cron_service, context.cron_timezone)
@@ -126,6 +129,7 @@ class CronTool(Tool):
         cron_expr: str | None,
         task_id: str | None,
     ) -> ToolResult:
+        """Create a schedule from one timing option and the current conversation's delivery route."""
         if not isinstance(message, str) or not message.strip():
             return _tool_error("Adding a scheduled task requires a non-empty message")
         schedule_count = sum(
@@ -189,6 +193,7 @@ class CronTool(Tool):
             return _tool_error(f"Unable to create scheduled task: {error}")
 
     def _list_tasks(self, session_key: str) -> ToolResult:
+        """Format the scheduled tasks visible to the current conversation."""
         try:
             tasks = tuple(
                 task
@@ -205,6 +210,7 @@ class CronTool(Tool):
         return ToolResult(content="\n".join(lines))
 
     def _remove_task(self, session_key: str, task_id: str | None) -> ToolResult:
+        """Remove a task after validating its ID and checking the conversation scope."""
         if not isinstance(task_id, str) or not task_id.strip():
             return _tool_error("Removing a scheduled task requires task_id")
         normalized_task_id = task_id.strip()
@@ -222,6 +228,7 @@ class CronTool(Tool):
 
 
 def _resolve_timezone(value: str) -> ZoneInfo:
+    """Resolve the configured IANA timezone used for local schedule times."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError("CronTool timezone must be a non-empty IANA timezone")
     try:
@@ -231,6 +238,7 @@ def _resolve_timezone(value: str) -> ZoneInfo:
 
 
 def _parse_at_time(value: str, timezone: ZoneInfo) -> datetime | ToolResult:
+    """Parse an ISO timestamp and apply the configured timezone to a naive value."""
     if not isinstance(value, str) or not value.strip():
         return _tool_error("At must be a non-empty ISO 8601 timestamp")
     try:
@@ -243,6 +251,7 @@ def _parse_at_time(value: str, timezone: ZoneInfo) -> datetime | ToolResult:
 
 
 def _parse_interval(value: float | None) -> timedelta | ToolResult:
+    """Convert a finite, positive number of seconds to a recurring interval."""
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
@@ -254,6 +263,7 @@ def _parse_interval(value: float | None) -> timedelta | ToolResult:
 
 
 def _delivery_metadata(metadata: Mapping[str, Any]) -> dict[str, str]:
+    """Copy the QQ chat type needed to route a later scheduled delivery."""
     if not isinstance(metadata, Mapping):
         return {}
     chat_type = metadata.get("qq_chat_type")
@@ -263,6 +273,7 @@ def _delivery_metadata(metadata: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _schedule_description(task: CronTask) -> str:
+    """Describe the schedule, timezone and next run for a listed task."""
     if task.schedule.kind == "at":
         schedule = f"type=at, at_ms={task.schedule.at_ms}"
     elif task.schedule.kind == "cron":
@@ -277,4 +288,5 @@ def _schedule_description(task: CronTask) -> str:
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Return a failed scheduling result with the supplied user-facing reason."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)

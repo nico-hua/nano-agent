@@ -16,6 +16,7 @@ class ToolRegistry:
     """Keep an ordered collection of tools and execute validated calls."""
 
     def __init__(self, tools: Sequence[Tool] = ()) -> None:
+        """Initialize the registry and register any supplied tools using the usual name checks."""
         self._tools: dict[str, Tool] = {}
         for tool in tools:
             self.register(tool)
@@ -99,6 +100,7 @@ def _validate_arguments(
     tool: Tool,
     arguments: Mapping[str, Any],
 ) -> dict[str, Any] | ToolResult:
+    """Validate the argument mapping against the tool's declared parameters."""
     if not isinstance(arguments, Mapping):
         return _tool_error(f"Tool arguments for {tool.name} must be an object")
 
@@ -130,6 +132,7 @@ def _validate_arguments(
 
 
 def _matches_parameter_type(value: Any, parameter: ToolParameter) -> bool:
+    """Check a Python value against the supported parameter type for a tool argument."""
     if parameter.type == "string":
         return isinstance(value, str)
     if parameter.type == "integer":
@@ -140,4 +143,5 @@ def _matches_parameter_type(value: Any, parameter: ToolParameter) -> bool:
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Represent a dispatch or argument failure as a tool result the caller can consume."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)

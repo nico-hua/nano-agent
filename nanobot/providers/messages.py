@@ -27,6 +27,7 @@ class BaseMessage(ABC):
     is_visible: bool = field(default=True, kw_only=True)
 
     def __post_init__(self) -> None:
+        """Require a boolean visibility flag for display and evidence filtering."""
         if not isinstance(self.is_visible, bool):
             raise TypeError("is_visible must be a boolean")
 
@@ -44,6 +45,7 @@ class SystemMessage(BaseMessage):
 
     @property
     def role(self) -> Literal["system"]:
+        """Identify instructions when serializing a provider-neutral message."""
         return "system"
 
 
@@ -53,6 +55,7 @@ class HumanMessage(BaseMessage):
 
     @property
     def role(self) -> Literal["user"]:
+        """Identify user input for turn grouping and provider serialization."""
         return "user"
 
 
@@ -64,6 +67,7 @@ class AIMessage(BaseMessage):
 
     @property
     def role(self) -> Literal["assistant"]:
+        """Identify assistant text and tool requests when serializing a conversation."""
         return "assistant"
 
 
@@ -75,6 +79,7 @@ class ToolMessage(BaseMessage):
 
     @property
     def role(self) -> Literal["tool"]:
+        """Identify tool output associated with a preceding tool call."""
         return "tool"
 
 

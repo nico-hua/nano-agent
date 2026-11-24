@@ -37,6 +37,7 @@ class CronService:
         *,
         timezone_name: str = DEFAULT_CRON_TIMEZONE,
     ) -> None:
+        """Bind the scheduled-task callback and storage and initialize the scheduler wakeup event."""
         if not callable(callback):
             raise TypeError("CronService callback must be callable")
         _validate_timezone(timezone_name)
@@ -275,6 +276,7 @@ class CronService:
         name: str,
         next_run_at: int,
     ) -> CronTask:
+        """Persist a newly identified task with its first due time and wake the scheduler."""
         self._ensure_loaded()
         identifier = _normalize_task_id(task_id)
         if identifier in self._tasks:
@@ -296,6 +298,7 @@ class CronService:
         return task
 
     async def _run(self) -> None:
+        """Dispatch due tasks and wait for the next deadline or a scheduling change."""
         try:
             while not self._stopping:
                 self._wakeup.clear()
@@ -312,6 +315,7 @@ class CronService:
             raise
 
     def _due_tasks(self, now: int) -> tuple[CronTask, ...]:
+        """Select enabled tasks whose next run is due at the supplied time."""
         return tuple(
             task
             for task in self._tasks.values()
@@ -323,6 +327,7 @@ class CronService:
         )
 
     async def _wait_for_next_task(self) -> None:
+        """Wait until the nearest deadline or until a task change wakes the scheduler."""
         next_runs = tuple(
             task.state.next_run_at
             for task in self._tasks.values()
@@ -339,6 +344,7 @@ class CronService:
             pass
 
     async def _execute_task(self, task: CronTask) -> None:
+        """Invoke the task callback and record the outcome of the scheduled run."""
         last_error: str | None = None
         try:
             await self._callback(task)
@@ -356,6 +362,7 @@ class CronService:
                 self._record_execution(task, last_error)
 
     def _record_execution(self, task: CronTask, last_error: str | None) -> None:
+        """Update run status and schedule the next occurrence or disable the completed one-shot."""
         now = _utc_now_ms()
         task.state.last_run_at = now
         task.state.last_error = last_error
@@ -398,6 +405,7 @@ class CronService:
         self._wakeup.set()
 
     def _load_tasks(self) -> None:
+        """Restore the persisted tasks into the scheduler's in-memory registry."""
         tasks = self._storage.load()
         now_ms = _utc_now_ms()
         changed = False
@@ -432,18 +440,22 @@ class CronService:
         self._loaded = True
 
     def _ensure_loaded(self) -> None:
+        """Load the task registry on first access."""
         if not self._loaded:
             self._load_tasks()
 
     def _save_tasks(self, tasks: dict[str, CronTask]) -> None:
+        """Persist the supplied task registry as a single snapshot."""
         self._storage.save(tuple(tasks.values()))
 
 
 def _utc_now_ms() -> int:
+    """Return the current time in milliseconds since the Unix epoch."""
     return _datetime_to_milliseconds(datetime.now(timezone.utc))
 
 
 def _normalize_datetime(value: datetime) -> datetime:
+    """Require an aware datetime and convert it to UTC for scheduling."""
     if not isinstance(value, datetime):
         raise TypeError("Cron task time must be a datetime")
     if value.tzinfo is None or value.utcoffset() is None:
@@ -452,10 +464,12 @@ def _normalize_datetime(value: datetime) -> datetime:
 
 
 def _datetime_to_milliseconds(value: datetime) -> int:
+    """Round a datetime's Unix timestamp to the nearest millisecond."""
     return round(value.timestamp() * 1000)
 
 
 def _timedelta_to_milliseconds(value: timedelta) -> int:
+    """Convert a scheduling interval to milliseconds and validate the resulting duration."""
     milliseconds = round(value.total_seconds() * 1000)
     if milliseconds <= 0:
         raise ValueError("Cron task interval must be at least one millisecond")
@@ -463,6 +477,7 @@ def _timedelta_to_milliseconds(value: timedelta) -> int:
 
 
 def _validate_timezone(value: str) -> None:
+    """Require a timezone name recognized by the zone database."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Cron task timezone must be a non-empty IANA timezone")
     try:
@@ -491,6 +506,7 @@ def calculate_next_cron_run_at(
 
 
 def _normalize_cron_expression(value: str | None) -> str:
+    """Strip the expression and validate it with the cron parser."""
     if not isinstance(value, str) or not value.strip():
         raise ValueError("Cron expression must not be empty")
     expression = value.strip()
@@ -500,11 +516,13 @@ def _normalize_cron_expression(value: str | None) -> str:
 
 
 def _timezone(value: str) -> ZoneInfo:
+    """Build timezone information for interpreting a local cron schedule."""
     _validate_timezone(value)
     return ZoneInfo(value)
 
 
 def _normalize_task_id(task_id: str | None) -> str:
+    """Normalize an explicit task ID or generate one when omitted."""
     if task_id is None:
         return uuid4().hex
     if not isinstance(task_id, str):
@@ -516,11 +534,13 @@ def _normalize_task_id(task_id: str | None) -> str:
 
 
 def _validate_task_text(value: str, name: str) -> None:
+    """Require a string for a user-supplied task text field."""
     if not isinstance(value, str):
         raise TypeError(f"Cron task {name} must be a string")
 
 
 def _validate_payload(payload: CronPayload) -> None:
+    """Validate the message, routing fields and metadata carried by a scheduled task."""
     _validate_task_text(payload.message, "message")
     _validate_task_text(payload.session_key, "session_key")
     _validate_task_text(payload.sender_id, "sender_id")
@@ -531,6 +551,7 @@ def _validate_payload(payload: CronPayload) -> None:
 
 
 def _copy_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Take a shallow copy so task metadata is independent of the caller's mapping."""
     if metadata is None:
         return {}
     if not isinstance(metadata, Mapping):

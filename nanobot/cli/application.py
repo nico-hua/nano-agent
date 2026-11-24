@@ -77,6 +77,7 @@ class Application:
         cron_service_factory: CronServiceFactory | None = None,
         api_service_factory: ApiServiceFactory = HttpApiService,
     ) -> None:
+        """Assemble runtime services and bind their lifecycles to this application."""
         if not isinstance(config, NanobotConfig):
             raise TypeError("Application requires a NanobotConfig")
         if config.workspace is None:
@@ -346,10 +347,12 @@ class Application:
             logger.info("Application stopped")
 
     async def _close_embedding_provider(self) -> None:
+        """Release the embedding client if semantic memory recall was configured."""
         if self._embedding_provider is not None:
             await self._embedding_provider.close()
 
     async def _cancel_agent_task(self) -> None:
+        """Cancel the agent task and await its shutdown."""
         task = self._agent_task
         self._agent_task = None
         if task is None or task.done():
@@ -380,6 +383,7 @@ class Application:
         return cancellation
 
     def _runtime_tasks(self) -> tuple[asyncio.Task[None], asyncio.Task[None]]:
+        """Return the agent and channel tasks once both have been started."""
         if self._agent_task is None or self._channel_task is None:
             raise RuntimeError("Application runtime tasks have not been started")
         return self._agent_task, self._channel_task
@@ -388,6 +392,7 @@ class Application:
         self,
         completed_tasks: set[asyncio.Task[object]],
     ) -> None:
+        """Propagate runtime task failures and report an unexpected clean exit."""
         for component_name, task in (
             ("AgentLoop", self._agent_task),
             ("ChannelManager", self._channel_task),
@@ -421,6 +426,7 @@ def _create_agent_loop(
     *,
     memory_recall: MemoryRecall,
 ) -> AgentLoop:
+    """Wire the runner and shared workspace services into the main agent loop."""
     return AgentLoop(
         runner,
         provider,

@@ -61,11 +61,13 @@ class MemoryStore:
     """One database per user workspace, with short-lived connections."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Locate the workspace database and defer schema initialization until first access."""
         self._path = Path(workspace).resolve() / "memory" / "memory.sqlite3"
         self._initialized = False
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open a short-lived transaction and initialize or upgrade the lexical index on first use."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with closing(sqlite3.connect(self._path)) as db:
             db.row_factory = sqlite3.Row
@@ -91,6 +93,7 @@ class MemoryStore:
                 yield db
 
     def append_event(self, session_key: str, messages: Sequence[BaseMessage]) -> MemoryEvent | None:
+        """Persist the visible turn as an evidence snapshot unless it contains a detected credential."""
         if not session_key.strip() or not messages:
             raise ValueError("A memory event requires a session and a non-empty turn")
         if any(isinstance(message, SystemMessage) for message in messages):
@@ -108,6 +111,7 @@ class MemoryStore:
         return MemoryEvent(row["id"], session_key, records)
 
     def next_event(self) -> MemoryEvent | None:
+        """Read the oldest unprocessed snapshot without acknowledging it."""
         if not self._path.exists():
             return None
         with self._connect() as db:
@@ -119,6 +123,7 @@ class MemoryStore:
         return MemoryEvent(row["id"], row["session_key"], tuple(json.loads(row["messages"])))
 
     def active_memories(self) -> list[ActiveMemory]:
+        """Load current versions with their source event and offset, newest ID first."""
         if not self._path.exists():
             return []
         with self._connect() as db:
@@ -130,6 +135,7 @@ class MemoryStore:
             return [ActiveMemory(**row) for row in rows]
 
     def search_keywords(self, query: str, limit: int = 20) -> list[int]:
+        """Rank active IDs using FTS5, giving complete code identifiers priority over component matches."""
         terms = list(dict.fromkeys(keywords(query)))[:64]
         if not terms or not self._path.exists():
             return []
@@ -149,6 +155,7 @@ class MemoryStore:
             return [row[0] for row in rows]
 
     def missing_embeddings(self, model_key: str, limit: int) -> list[tuple[int, str]]:
+        """Find the next active entries lacking a vector for the requested model."""
         if not self._path.exists():
             return []
         with self._connect() as db:
@@ -161,6 +168,7 @@ class MemoryStore:
             return [(row["id"], row["text"]) for row in rows]
 
     def save_embeddings(self, model_key: str, ids: Sequence[int], vectors: Sequence[tuple[float, ...]]) -> None:
+        """Write each vector only if its memory is still active after the embedding request."""
         with self._connect() as db:
             db.executemany("""
                 INSERT OR IGNORE INTO memory_embeddings(memory_id, model_key, dimensions, vector)
@@ -169,6 +177,7 @@ class MemoryStore:
                   for memory_id, vec in zip(ids, vectors, strict=True)))
 
     def active_vectors(self, model_key: str) -> dict[int, tuple[float, ...]]:
+        """Load vectors from the requested model space for currently active memory versions."""
         if not self._path.exists():
             return {}
         with self._connect() as db:

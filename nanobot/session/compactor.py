@@ -66,6 +66,7 @@ class SessionCompactor:
         token_threshold: int = DEFAULT_COMPACTION_THRESHOLD_TOKENS,
         recent_token_budget: int = DEFAULT_COMPACTION_RECENT_TOKENS,
     ) -> None:
+        """Bind the summarization provider and validate the input, trigger and recent-history budgets."""
         if not isinstance(provider, LLMProvider):
             raise TypeError("SessionCompactor requires an LLMProvider")
         _validate_token_budget("token_threshold", token_threshold, positive=True)
@@ -135,6 +136,7 @@ class SessionCompactor:
         self, messages: Sequence[BaseMessage], start: int, until: int,
         previous: str | None, max_tokens: int,
     ) -> str | None:
+        """Extend the previous summary when valid or rebuild the covered prefix from original messages."""
         if previous and (until == start or _parse(previous, range(start)) is None):
             # Rebuild from original sources for legacy notes or a tighter summary budget.
             previous = None
@@ -187,10 +189,12 @@ class SessionCompactor:
             return None
 
         def request(batch: Sequence[dict]) -> tuple[BaseMessage, ...]:
+            """Build a summary request from prior notes and a batch of indexed source messages."""
             payload = {"previous_summary": notes, "messages": batch}
             return (_INSTRUCTIONS, HumanMessage(content=_json(payload)))
 
         def fits(messages: Sequence[BaseMessage]) -> bool:
+            """Check that inputs, schema and reserved summary output fit the model budget together."""
             return estimate_messages_tokens(messages) + schema_tokens + output_limit <= token_budget
 
         while records:
@@ -240,6 +244,7 @@ class SessionCompactor:
 
     @staticmethod
     def _raw_message_tokens(session: Session) -> int:
+        """Estimate the cost of messages after the persisted summary boundary."""
         return estimate_messages_tokens(session.messages[session.summary_until :])
 
     @staticmethod
@@ -264,6 +269,7 @@ class SessionCompactor:
 
 
 def _validate_token_budget(name: str, value: int, *, positive: bool) -> None:
+    """Validate an integer token limit, allowing zero only for budgets that explicitly permit it."""
     if not isinstance(value, int) or isinstance(value, bool):
         raise TypeError(f"{name} must be an integer")
     if value < 0 or (positive and value == 0):
@@ -272,10 +278,12 @@ def _validate_token_budget(name: str, value: int, *, positive: bool) -> None:
 
 
 def _json(value: object) -> str:
+    """Serialize notes and source records compactly for both estimation and provider input."""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
 def _parse(content: str, allowed: set[int] | range) -> dict[str, list[dict]] | None:
+    """Validate summary sections, nonblank notes and source indices against the allowed range."""
     try:
         notes = json.loads(content)
     except (ValueError, RecursionError):

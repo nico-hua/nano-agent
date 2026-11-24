@@ -16,6 +16,7 @@ class MessageTool(Tool):
     """Publish a plain outbound message using the current request route."""
 
     def __init__(self, message_bus: MessageBus) -> None:
+        """Bind immediate conversation delivery to the shared message bus."""
         if not isinstance(message_bus, MessageBus):
             raise TypeError("MessageTool requires a MessageBus")
         self._message_bus = message_bus
@@ -37,10 +38,12 @@ class MessageTool(Tool):
 
     @classmethod
     def enabled(cls, context: ToolContext) -> bool:
+        """Expose direct messaging when a message bus is available."""
         return isinstance(context.message_bus, MessageBus)
 
     @classmethod
     def create(cls, context: ToolContext) -> MessageTool:
+        """Construct the message tool from the runtime bus."""
         if not isinstance(context.message_bus, MessageBus):
             raise TypeError("MessageTool requires a MessageBus")
         return cls(context.message_bus)
@@ -102,4 +105,5 @@ def _outbound_message(
 
 
 def _tool_error(message: str) -> ToolResult:
+    """Return a failed delivery result with the supplied reason."""
     return ToolResult(content=f"Error: {message}", success=False, error=message)

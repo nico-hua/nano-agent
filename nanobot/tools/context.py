@@ -58,6 +58,7 @@ class RequestContext:
         return self if self.session_messages is None else replace(self, session_messages=None)
 
     def __post_init__(self) -> None:
+        """Validate routing identifiers and copy request metadata before binding the tool context."""
         for name, value in (
             ("session_key", self.session_key),
             ("channel", self.channel),

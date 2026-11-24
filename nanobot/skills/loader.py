@@ -48,6 +48,7 @@ class SkillsLoader:
     """Discover and read static Skills without executing their contents."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Locate the workspace Skills directory without loading or executing any Skill."""
         if not isinstance(workspace, (str, Path)):
             raise TypeError("SkillsLoader workspace must be a string or Path")
 
@@ -103,6 +104,7 @@ class SkillsLoader:
         return tuple(references)
 
     def _scan_directory(self, directory: Path) -> tuple[SkillInfo, ...]:
+        """Discover Skill directories in stable order and read their metadata and availability."""
         try:
             skill_directories = sorted(
                 (path for path in directory.iterdir() if path.is_dir()),
@@ -171,6 +173,7 @@ def _parse_frontmatter(
     lines: list[str],
     fallback_name: str,
 ) -> dict[str, _SkillMetadataValue]:
+    """Extract supported metadata fields from the frontmatter lines."""
     metadata: dict[str, _SkillMetadataValue] = {}
     inline_metadata = _parse_inline_object("".join(lines).strip())
     if inline_metadata is not None:
@@ -214,11 +217,13 @@ def _metadata_text(
     name: str,
     fallback: str,
 ) -> str:
+    """Read a textual metadata field or use its fallback."""
     value = metadata.get(name)
     return value if isinstance(value, str) else fallback
 
 
 def _parse_bool(value: str) -> bool | None:
+    """Parse case-insensitive true and false literals and leave other values unrecognized."""
     normalized_value = value.lower()
     if normalized_value == "true":
         return True
@@ -232,6 +237,7 @@ def _parse_metadata_value(
     path: tuple[str, ...],
     value: str,
 ) -> None:
+    """Apply a frontmatter field according to its nested metadata path."""
     inline_object = _parse_inline_object(value)
     if inline_object is not None:
         _parse_metadata_mapping(metadata, path, inline_object)
@@ -285,6 +291,7 @@ def _set_requirement_items(
     path: tuple[str, ...],
     values: Iterable[object],
 ) -> None:
+    """Merge valid requirement items into the matching dependency list."""
     key = _requirement_metadata_key(path)
     if key is None:
         return
@@ -301,6 +308,7 @@ def _append_requirement_value(
     path: tuple[str, ...],
     value: str,
 ) -> None:
+    """Append a validated dependency while preserving discovery order."""
     key = _requirement_metadata_key(path)
     if key is None:
         return
@@ -315,6 +323,7 @@ def _set_requirement_values(
     path: tuple[str, ...],
     value: str,
 ) -> None:
+    """Replace a requirement field with the validated values parsed from its text."""
     key = _requirement_metadata_key(path)
     if key is None:
         return
@@ -329,6 +338,7 @@ def _set_requirement_values(
 
 
 def _requirement_metadata_key(path: tuple[str, ...]) -> str | None:
+    """Map a supported frontmatter path to its normalized dependency field."""
     if path[:1] == ("metadata",):
         path = path[1:]
     if path == ("nanobot", "requires", "bins"):
@@ -339,6 +349,7 @@ def _requirement_metadata_key(path: tuple[str, ...]) -> str | None:
 
 
 def _parse_requirement_values(value: str) -> tuple[str, ...] | None:
+    """Parse textual dependency values into an ordered collection."""
     if value.startswith("["):
         if not value.endswith("]"):
             return None
@@ -349,6 +360,7 @@ def _parse_requirement_values(value: str) -> tuple[str, ...] | None:
 
 
 def _is_valid_requirement_value(key: str, value: str) -> bool:
+    """Check the name syntax for the requested binary or environment variable."""
     pattern = _BIN_NAME_PATTERN if key == "requires_bins" else _ENV_NAME_PATTERN
     return bool(pattern.fullmatch(value))
 
@@ -357,11 +369,13 @@ def _metadata_values(
     metadata: dict[str, _SkillMetadataValue],
     key: str,
 ) -> tuple[str, ...]:
+    """Read a dependency tuple and treat other metadata types as empty."""
     value = metadata.get(key)
     return value if isinstance(value, tuple) else ()
 
 
 def _unique_values(values: Iterable[str]) -> tuple[str, ...]:
+    """Deduplicate values while preserving their first occurrence."""
     unique_values: list[str] = []
     for value in values:
         if value not in unique_values:
@@ -373,6 +387,7 @@ def _availability_fields(
     required_bins: tuple[str, ...],
     required_env: tuple[str, ...],
 ) -> dict[str, bool | tuple[str, ...]]:
+    """Compute availability and identify missing executable or environment requirements."""
     missing_dependencies = tuple(
         f"bin: {name}" for name in required_bins if shutil.which(name) is None
     ) + tuple(
@@ -385,6 +400,7 @@ def _availability_fields(
 
 
 def _validate_skill_name(name: str) -> str:
+    """Strip the Skill name and reject blank or non-text values."""
     if not isinstance(name, str):
         raise TypeError("Skill name must be a string")
     normalized_name = name.strip()

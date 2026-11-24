@@ -29,6 +29,7 @@ class JsonCronTaskStorage:
     """Store all workspace Cron tasks in one atomically replaced JSON file."""
 
     def __init__(self, workspace: str | Path) -> None:
+        """Locate the task snapshot under the workspace cron directory."""
         if not isinstance(workspace, (str, Path)):
             raise TypeError("Cron task storage workspace must be a string or Path")
         self._directory = Path(workspace) / "cron"
@@ -92,6 +93,7 @@ class JsonCronTaskStorage:
 
 
 def _tasks_from_document(document: Any) -> tuple[CronTask, ...]:
+    """Validate the persisted document and reconstruct its collection of scheduled tasks."""
     if not isinstance(document, Mapping):
         raise CronStorageError("Cron task storage must contain a JSON object")
     version = document.get("version")
@@ -109,6 +111,7 @@ def _tasks_from_document(document: Any) -> tuple[CronTask, ...]:
 
 
 def _task_to_record(task: CronTask) -> dict[str, Any]:
+    """Serialize a task, its schedule, delivery payload and last execution state."""
     if not isinstance(task, CronTask):
         raise TypeError("Cron task storage requires CronTask instances")
     return {
@@ -140,6 +143,7 @@ def _task_to_record(task: CronTask) -> dict[str, Any]:
 
 
 def _task_from_record(record: Any) -> CronTask:
+    """Reconstruct a scheduled task while validating its nested record fields."""
     if not isinstance(record, Mapping):
         raise CronStorageError("Cron task records must be JSON objects")
     schedule = _required_mapping(record, "schedule")
@@ -198,6 +202,7 @@ def _task_from_record(record: Any) -> CronTask:
 
 
 def _optional_integer(record: Mapping[str, Any], name: str) -> int | None:
+    """Read an optional integer field from a task record."""
     value = record.get(name)
     if value is None:
         return None
@@ -207,6 +212,7 @@ def _optional_integer(record: Mapping[str, Any], name: str) -> int | None:
 
 
 def _optional_mapping(record: Mapping[str, Any], name: str) -> dict[str, Any]:
+    """Copy an optional mapping, using an empty mapping for missing metadata."""
     value = record.get(name, {})
     if not isinstance(value, Mapping):
         raise CronStorageError(f"Cron task {name} must be an object")
@@ -216,6 +222,7 @@ def _optional_mapping(record: Mapping[str, Any], name: str) -> dict[str, Any]:
 
 
 def _timezone_from_record(record: Mapping[str, Any]) -> str:
+    """Read the schedule timezone and apply the storage default for older records."""
     value = _optional_string(record, "tz", default=DEFAULT_CRON_TIMEZONE)
     if not value.strip():
         raise CronStorageError("Cron task timezone must not be blank")
@@ -227,6 +234,7 @@ def _timezone_from_record(record: Mapping[str, Any]) -> str:
 
 
 def _required_mapping(record: Mapping[str, Any], name: str) -> Mapping[str, Any]:
+    """Require a mapping before decoding a nested task record."""
     value = record.get(name)
     if not isinstance(value, Mapping):
         raise CronStorageError(f"Cron task {name} must be an object")
@@ -234,6 +242,7 @@ def _required_mapping(record: Mapping[str, Any], name: str) -> Mapping[str, Any]
 
 
 def _required_bool(record: Mapping[str, Any], name: str) -> bool:
+    """Require an actual boolean for a persisted task flag."""
     value = record.get(name)
     if not isinstance(value, bool):
         raise CronStorageError(f"Cron task {name} must be a boolean")
@@ -241,6 +250,7 @@ def _required_bool(record: Mapping[str, Any], name: str) -> bool:
 
 
 def _required_text(record: Mapping[str, Any], name: str) -> str:
+    """Read a required, nonblank string from the task record."""
     value = _optional_string(record, name, default=None)
     if value is None or not value.strip():
         raise CronStorageError(f"Cron task {name} must be a non-empty string")
@@ -253,6 +263,7 @@ def _optional_string(
     *,
     default: str | None,
 ) -> str | None:
+    """Read a string field with the supplied default for an absent key."""
     value = record.get(name, default)
     if not isinstance(value, str):
         raise CronStorageError(f"Cron task {name} must be a string")
@@ -260,6 +271,7 @@ def _optional_string(
 
 
 def _optional_nullable_string(record: Mapping[str, Any], name: str) -> str | None:
+    """Read a string field that may also be absent or explicitly null."""
     value = record.get(name)
     if value is None:
         return None

@@ -54,6 +54,7 @@ class SubagentRunResult:
     error: str | None = None
 
     def __post_init__(self) -> None:
+        """Require exactly one result or error for a completed subagent run."""
         if (self.agent_result is None) == (self.error is None):
             raise ValueError("SubagentRunResult requires exactly one outcome")
         if self.error is not None and (not isinstance(self.error, str) or not self.error):
@@ -84,6 +85,7 @@ class BackgroundSubagentTask:
     result_summary: str | None = None
 
     def __post_init__(self) -> None:
+        """Validate background task routing fields and take a private copy of metadata."""
         for name, value in (
             ("task_id", self.task_id),
             ("task", self.task),
@@ -133,6 +135,7 @@ class SubagentManager:
         max_background_tasks: int = _DEFAULT_MAX_BACKGROUND_TASKS,
         background_timeout_seconds: float | None = _DEFAULT_BACKGROUND_TIMEOUT_SECONDS,
     ) -> None:
+        """Bind execution services and initialize ownership of background tasks."""
         if not isinstance(runner, AgentRunner):
             raise TypeError("SubagentManager requires an AgentRunner")
         if not isinstance(provider, LLMProvider):
@@ -415,6 +418,7 @@ class SubagentManager:
         task: str,
         request_context: RequestContext,
     ) -> SubagentRunResult:
+        """Apply the configured timeout to a background run when one is set."""
         if self._background_timeout_seconds is None:
             return await self.run(task, request_context=request_context)
         return await asyncio.wait_for(
@@ -448,6 +452,7 @@ class SubagentManager:
         )
 
     def _mark_running(self, task_id: str) -> bool:
+        """Transition a tracked task to running if it can still start."""
         task = self._background_task_records.get(task_id)
         if task is None or task.status != "pending":
             return False
@@ -483,11 +488,13 @@ class SubagentManager:
         task_id: str,
         task: asyncio.Task[None],
     ) -> None:
+        """Drop the task handle only if it still refers to the completed invocation."""
         if self._background_tasks.get(task_id) is task:
             self._background_tasks.pop(task_id, None)
 
 
 def _background_result_message(task: BackgroundSubagentTask) -> InboundMessage:
+    """Create a completion notification addressed to the parent session."""
     if task.status == "completed":
         content = (
             "A background subagent task has completed. Use its result to respond "
@@ -522,6 +529,7 @@ def _background_result_message(task: BackgroundSubagentTask) -> InboundMessage:
 
 
 def _result_summary(content: str | None) -> str | None:
+    """Trim background result text to the preview length used in task listings."""
     if content is None:
         return None
     summary = content.strip()
@@ -531,4 +539,5 @@ def _result_summary(content: str | None) -> str | None:
 
 
 def _utc_now() -> datetime:
+    """Return a timezone-aware UTC timestamp for task state changes."""
     return datetime.now(timezone.utc)

@@ -84,6 +84,7 @@ def load_nanobot_config(
 
 
 def _read_config_document(config_path: Path) -> dict[str, Any]:
+    """Read a UTF-8 JSON object and report missing, unreadable or malformed configuration."""
     try:
         raw_config = json.loads(config_path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
@@ -99,6 +100,7 @@ def _read_config_document(config_path: Path) -> dict[str, Any]:
 
 
 def _validate_file_config(raw_config: dict[str, Any]) -> NanobotFileConfig:
+    """Validate the parsed document and expose schema failures as configuration errors."""
     try:
         return NanobotFileConfig.model_validate(raw_config)
     except ValidationError as exc:
@@ -140,11 +142,13 @@ def _write_config_document(
     raw_config: dict[str, Any],
     error_message: str,
 ) -> None:
+    """Serialize the configuration as indented Unicode JSON with a trailing newline."""
     content = json.dumps(raw_config, ensure_ascii=False, indent=2) + "\n"
     _replace_file_contents(config_path, content, error_message)
 
 
 def _replace_file_contents(path: Path, content: str, error_message: str) -> None:
+    """Replace the configuration via a temporary sibling and clean it up on failure."""
     temporary_path: Path | None = None
     try:
         with NamedTemporaryFile(

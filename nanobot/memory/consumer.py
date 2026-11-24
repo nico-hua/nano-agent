@@ -22,6 +22,7 @@ class MemoryEventConsumer:
         consolidator: MemoryConsolidator,
         recall: MemoryRecall | None = None,
     ) -> None:
+        """Start idle and share a single consumer task across sessions in this workspace."""
         if not isinstance(store, MemoryStore):
             raise TypeError("MemoryEventConsumer requires a MemoryStore")
         if not isinstance(consolidator, MemoryConsolidator):
@@ -81,6 +82,7 @@ class MemoryEventConsumer:
         self._task = None
 
     async def _consume_pending_events(self) -> None:
+        """Drain events in ID order until empty or failed, then backfill missing embeddings."""
         try:
             while True:
                 self._wake_requested = False
@@ -98,6 +100,7 @@ class MemoryEventConsumer:
             logger.exception("Background long-term memory event processing failed")
 
     def _on_task_done(self, task: asyncio.Task[None]) -> None:
+        """Clear the completed worker and honor any wake request received while it was running."""
         if self._task is task:
             self._task = None
         if self._wake_requested and not self._closed:

@@ -43,6 +43,7 @@ class OpenAICompatProvider(LLMProvider):
         response_schema_mode: str | None = None,
         client: Any | None = None,
     ) -> None:
+        """Configure the chat client and use the shared request wrapper for retries."""
         self.api_base = api_base
         self._schema_mode = response_schema_mode or (
             "json_object" if urlsplit(api_base).hostname == "api.deepseek.com" else "json_schema"
@@ -71,6 +72,7 @@ class OpenAICompatProvider(LLMProvider):
         *,
         response_schema: dict[str, Any] | None = None,
     ) -> LLMResponse:
+        """Request a final completion with optional structured output in the configured schema mode."""
         if response_schema is not None and self._schema_mode != "json_schema":
             messages = append_schema_instruction(messages, response_schema)
         request = self._build_request(messages, tools, max_tokens, temperature)
@@ -90,6 +92,7 @@ class OpenAICompatProvider(LLMProvider):
         )
 
         async def request_once() -> LLMResponse:
+            """Send one prepared chat request and convert the completion to a neutral response."""
             response = await self._client.chat.completions.create(**request)
             return _response_from_completion(response)
 
@@ -107,6 +110,7 @@ class OpenAICompatProvider(LLMProvider):
         temperature: float | None = None,
         on_delta: Callable[[str], Awaitable[None]] | None = None,
     ) -> LLMResponse:
+        """Stream text deltas and return the reconstructed completion and tool calls."""
         request = self._build_request(messages, tools, max_tokens, temperature)
         request["stream"] = True
         logger.debug(
@@ -119,6 +123,7 @@ class OpenAICompatProvider(LLMProvider):
         output_started = False
 
         async def consume_stream() -> LLMResponse:
+            """Collect chunks for one attempt, tracking whether output has been delivered to the caller."""
             nonlocal output_started
             response = await self._client.chat.completions.create(**request)
             content_parts: list[str] = []
@@ -184,6 +189,7 @@ class OpenAICompatProvider(LLMProvider):
         max_tokens: int | None,
         temperature: float | None,
     ) -> dict[str, Any]:
+        """Encode chat messages, tools and generation options for the configured endpoint."""
         request: dict[str, Any] = {
             "model": self.default_model,
             "messages": [_message_to_dict(message) for message in messages],
@@ -204,6 +210,7 @@ class OpenAICompatProvider(LLMProvider):
 
 
 def _message_to_dict(message: BaseMessage) -> dict[str, Any]:
+    """Serialize message text and any tool calls or tool-result correlation ID."""
     result: dict[str, Any] = {
         "role": message.role,
         "content": message.content,
@@ -226,6 +233,7 @@ def _message_to_dict(message: BaseMessage) -> dict[str, Any]:
 
 
 def _response_from_completion(response: Any) -> LLMResponse:
+    """Decode the returned choice, including tool requests, stop reason and reported usage."""
     choices = getattr(response, "choices", None) or ()
     if not choices:
         raise ProviderError("OpenAI-compatible response contained no choices")
@@ -245,6 +253,7 @@ def _response_from_completion(response: Any) -> LLMResponse:
 
 
 def _tool_call_from_response(tool_call: Any) -> ToolCallRequest:
+    """Decode a complete SDK function call through the shared argument parser."""
     function = tool_call.function
     return _tool_call_from_parts(
         {
@@ -259,6 +268,7 @@ def _append_tool_call(
     tool_call_parts: dict[int, dict[str, str]],
     tool_call: Any,
 ) -> None:
+    """Accumulate streamed function-call fragments by their tool-call index."""
     index = getattr(tool_call, "index", None)
     if index is None:
         index = len(tool_call_parts)
@@ -274,6 +284,7 @@ def _append_tool_call(
 
 
 def _tool_call_from_parts(parts: Mapping[str, str]) -> ToolCallRequest:
+    """Parse the assembled function arguments into a provider-neutral tool request."""
     try:
         arguments = json.loads(parts["arguments"] or "{}")
     except json.JSONDecodeError as exc:
@@ -288,6 +299,7 @@ def _tool_call_from_parts(parts: Mapping[str, str]) -> ToolCallRequest:
 
 
 def _usage_from_completion(usage: Any) -> TokenUsage | None:
+    """Convert optional SDK usage fields into the common token accounting model."""
     if usage is None:
         return None
     prompt_tokens = getattr(usage, "prompt_tokens", None)

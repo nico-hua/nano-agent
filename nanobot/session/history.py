@@ -117,6 +117,7 @@ def read_session(
 def _visible_messages(
     messages: Sequence[BaseMessage], *, tool_index: int | None = None,
 ) -> Iterator[tuple[int, BaseMessage]]:
+    """Yield visible conversation text and the tool result at an explicitly requested index."""
     for index, message in enumerate(messages):
         if not message.is_visible:
             continue
@@ -130,6 +131,7 @@ def _best_match(
     keywords: tuple[re.Pattern[str], ...],
     cancelled: Event,
 ) -> tuple[int, int, str] | None:
+    """Prefer phrase matches over all-keyword matches, keeping the latest match of equal rank."""
     best = None
     for index, message in _visible_messages(session.messages):
         if cancelled.is_set():
@@ -146,6 +148,7 @@ def _best_match(
 
 
 def _snippet(text: str, position: int) -> str:
+    """Extract bounded context around a match and mark omitted text at either end."""
     start = max(0, min(position - 60, len(text) - _MAX_SNIPPET_CHARS))
     end = start + _MAX_SNIPPET_CHARS
     return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")

@@ -19,6 +19,7 @@ class InboundMessage:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """Validate inbound routing and copy metadata into this message."""
         _validate_routing(
             self.channel,
             self.chat_id,
@@ -43,6 +44,7 @@ class OutboundMessage:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """Validate outbound routing and copy metadata into this message."""
         _validate_routing(
             self.channel,
             self.chat_id,
@@ -61,6 +63,7 @@ def _validate_routing(
     sender_id: str,
     session_id: str,
 ) -> None:
+    """Check routing field types and the required channel and chat identifiers."""
     for name, value in (
         ("channel", channel),
         ("chat_id", chat_id),
@@ -73,5 +76,6 @@ def _validate_routing(
 
 
 def _validate_metadata(metadata: Mapping[str, Any]) -> None:
+    """Require mapping-shaped metadata before making a per-message copy."""
     if not isinstance(metadata, Mapping):
         raise TypeError("message metadata must be a mapping")

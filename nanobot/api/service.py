@@ -40,6 +40,7 @@ class HttpApiService:
         config: ApiConfig,
         auth: AuthConfig | None = None,
     ) -> None:
+        """Bind the HTTP configuration and application services without starting a listener."""
         if not isinstance(config, ApiConfig):
             raise TypeError("HttpApiService requires an ApiConfig")
         if not isinstance(session_manager, SessionManager):
@@ -137,10 +138,12 @@ class HttpApiService:
         self._started = False
 
     async def _health(self, request: web.Request) -> web.Response:
+        """Answer the liveness probe without invoking the agent."""
         del request
         return _json_response({"status": "ok"})
 
     async def _post_message(self, request: web.Request) -> web.Response:
+        """Validate the JSON message request and dispatch it to the agent loop."""
         try:
             payload = await request.json()
         except web.HTTPRequestEntityTooLarge:
@@ -250,6 +253,7 @@ class HttpApiService:
         return _json_response({"session_id": session_id, "deleted": True})
 
     async def _process_inbound(self, inbound: InboundMessage) -> web.Response:
+        """Translate an inbound turn and its reply into the HTTP response contract."""
         process_inbound = getattr(self._agent_loop, "process_inbound", None)
         if not callable(process_inbound):
             return _error_response(
@@ -357,6 +361,7 @@ def _auth_middleware(auth: AuthConfig) -> web.middleware:
         request: web.Request,
         handler: Any,
     ) -> web.StreamResponse:
+        """Apply the configured authentication policy while allowing health probes."""
         if not auth.enabled or request.path == "/health":
             return await handler(request)
         if _has_valid_bearer_token(request.headers.get("Authorization"), auth.token):
@@ -385,6 +390,7 @@ def _has_valid_bearer_token(value: str | None, expected_token: str) -> bool:
 
 
 def _json_response(payload: dict[str, Any], *, status: int = 200) -> web.Response:
+    """Encode the response as JSON while keeping Unicode text readable."""
     return web.json_response(
         payload,
         status=status,
@@ -393,6 +399,7 @@ def _json_response(payload: dict[str, Any], *, status: int = 200) -> web.Respons
 
 
 def _error_response(status: int, code: str, message: str) -> web.Response:
+    """Wrap an API error code and message in the standard JSON envelope."""
     return _json_response(
         {"error": {"code": code, "message": message}},
         status=status,
@@ -400,6 +407,7 @@ def _error_response(status: int, code: str, message: str) -> web.Response:
 
 
 def _framework_error_details(status: int) -> tuple[str, str]:
+    """Map framework HTTP status codes to API error codes and descriptions."""
     return {
         404: ("not_found", "Route not found"),
         405: ("method_not_allowed", "Method not allowed"),
@@ -408,6 +416,7 @@ def _framework_error_details(status: int) -> tuple[str, str]:
 
 
 def _session_summary(session: Session) -> dict[str, Any]:
+    """Build a session-list entry from timestamps and user-visible messages."""
     messages = _visible_message_records(session.messages)
     return {
         "session_id": session.key,
@@ -457,6 +466,7 @@ def _chat_message_records(
 
 
 def _preview(messages: list[dict[str, Any]], *, limit: int = 120) -> str:
+    """Select preview text by scanning the visible conversation backwards."""
     for message in reversed(messages):
         content_value = message.get("content")
         if not isinstance(content_value, str):
@@ -468,6 +478,7 @@ def _preview(messages: list[dict[str, Any]], *, limit: int = 120) -> str:
 
 
 def _is_local_browser_origin(origin: str | None) -> bool:
+    """Recognize HTTP browser origins with a loopback hostname."""
     if not isinstance(origin, str):
         return False
     parsed = urlparse(origin)

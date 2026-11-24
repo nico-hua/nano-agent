@@ -10,6 +10,7 @@ class FakeChannel(BaseChannel):
     """Channel implementation that keeps sent messages for assertions."""
 
     def __init__(self, name: str, message_bus: MessageBus) -> None:
+        """Create an in-memory channel that records outbound messages for inspection."""
         super().__init__(name, message_bus)
         self.sent_messages: list[OutboundMessage] = []
 

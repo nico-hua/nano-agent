@@ -17,6 +17,7 @@ class ChannelFactory:
     """Create external channels from registered channel type constructors."""
 
     def __init__(self, constructors: Mapping[str, ChannelConstructor] | None = None) -> None:
+        """Copy the constructor mapping so registrations belong to this factory."""
         self._constructors = dict(constructors or {})
 
     def register(self, channel_type: str, constructor: ChannelConstructor) -> None:
@@ -58,6 +59,7 @@ def _create_qq_channel(
     message_bus: MessageBus,
     config: NanobotConfig,
 ) -> BaseChannel:
+    """Build the QQ adapter using the selected channel configuration and shared bus."""
     if config.qq is None:
         raise ValueError("The qq channel requires QQ credentials in nanobot.json")
     return QQChannel(channel_name, message_bus, config.qq)
@@ -68,6 +70,7 @@ def _create_websocket_channel(
     message_bus: MessageBus,
     config: NanobotConfig,
 ) -> BaseChannel:
+    """Build the WebSocket adapter with the listener settings and runtime authentication policy."""
     if config.websocket is None:
         raise ValueError("The websocket channel requires WebSocket settings in nanobot.json")
     return WebSocketChannel(channel_name, message_bus, config.websocket, config.auth)

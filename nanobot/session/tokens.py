@@ -72,6 +72,7 @@ def split_user_turns(
 
 
 def _estimate_text_tokens(text: str) -> int:
+    """Estimate text cost separately for ASCII and non-ASCII characters, with a one-token minimum."""
     if not isinstance(text, str):
         raise TypeError("token estimation requires text content")
     ascii_characters = sum(character.isascii() for character in text)
@@ -80,6 +81,7 @@ def _estimate_text_tokens(text: str) -> int:
 
 
 def _validate_messages(messages: Sequence[BaseMessage]) -> None:
+    """Require provider-neutral messages before estimating a conversation's token cost."""
     if not isinstance(messages, Sequence) or not all(
         isinstance(message, BaseMessage) for message in messages
     ):
