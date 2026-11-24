@@ -17,6 +17,7 @@ from nanobot.agent import (
     ContextBuilder,
 )
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
+from tests.memory.fixtures import seed
 from nanobot.memory import MemoryConsolidator, MemoryStore
 from nanobot.providers import (
     AIMessage,
@@ -882,7 +883,7 @@ class AgentLoopCommandTest(unittest.IsolatedAsyncioTestCase):
     async def test_memory_reads_with_a_bounded_output_and_does_not_call_the_provider(self) -> None:
         provider = ScriptedProvider(())
         memory_store = MemoryStore(self._temporary_directory.name)
-        memory_store.write("A" * 24)
+        seed(memory_store, "A" * 24)
         router = CommandRouter(
             self._sessions,
             memory_store=memory_store,
@@ -892,7 +893,7 @@ class AgentLoopCommandTest(unittest.IsolatedAsyncioTestCase):
 
         result = await _dispatch(loop, "/memory", "test", "chat-1", "session-1")
 
-        self.assertTrue(result.content.startswith("A" * 16))
+        self.assertEqual(result.content[:16], "- [decision] AAA")
         self.assertIn("内容已截断", result.content)
         self.assertLessEqual(len(result.content), 32)
         self.assertEqual(provider.complete_calls, [])
@@ -1010,7 +1011,7 @@ class AgentLoopCommandTest(unittest.IsolatedAsyncioTestCase):
         await _dispatch(loop, "/help", "test", "chat-1", "session-1")
         await _dispatch(loop, "/memory", "test", "chat-1", "session-1")
 
-        self.assertEqual(store.read_events_after(0), ())
+        self.assertIsNone(store.next_event())
         self.assertEqual(self._sessions.get_or_create("session-1").messages, ())
 
     async def test_new_waits_for_a_running_turn_before_resetting_the_session(self) -> None:

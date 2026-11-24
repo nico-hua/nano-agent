@@ -7,10 +7,8 @@ import logging
 from collections import deque
 from collections.abc import Iterable, Sequence
 from itertools import islice
-from typing import Any
 
 from ..providers import (
-    AIMessage,
     BaseMessage,
     HumanMessage,
     LLMProvider,
@@ -18,6 +16,7 @@ from ..providers import (
     ToolMessage,
 )
 from ..providers.base import schema_instruction
+from ..providers.messages import message_record
 from .models import Session
 from .tokens import (
     DEFAULT_INPUT_TOKEN_BUDGET,
@@ -182,7 +181,7 @@ class SessionCompactor:
         notes = _parse(previous, range(previous_until)) if previous else None
         if previous and notes is None:
             return None
-        records = deque(_record(index, message) for index, message in indexed)
+        records = deque({"message_index": index, **message_record(message)} for index, message in indexed)
         output_limit = min(max_tokens, token_budget // 4)
         if output_limit < 1:
             return None
@@ -295,15 +294,3 @@ def _parse(content: str, allowed: set[int] | range) -> dict[str, list[dict]] | N
             if not isinstance(item["text"], str) or not item["text"].strip():
                 return None
     return {section: notes[section] for section in _SECTIONS}
-
-
-def _record(index: int, message: BaseMessage) -> dict[str, Any]:
-    record = {"message_index": index, "role": message.role, "content": message.content}
-    if isinstance(message, AIMessage) and message.tool_calls:
-        record["tool_calls"] = [
-            {"id": call.id, "name": call.name, "arguments": dict(call.arguments)}
-            for call in message.tool_calls
-        ]
-    elif isinstance(message, ToolMessage):
-        record["tool_call_id"] = message.tool_call_id
-    return record

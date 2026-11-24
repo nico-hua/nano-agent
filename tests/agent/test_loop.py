@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import tempfile
 import unittest
 from collections.abc import Awaitable, Callable, Sequence
@@ -20,6 +21,7 @@ from nanobot.agent import (
     ContextBuilder,
 )
 from nanobot.bus import InboundMessage, MessageBus, OutboundMessage
+from tests.memory.fixtures import addition, seed
 from nanobot.memory import MemoryConsolidator, MemoryStore
 from nanobot.providers import (
     AIMessage,
@@ -124,10 +126,11 @@ class BackgroundMemoryProvider(LLMProvider):
         tools: Sequence[Tool] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        response_schema: dict | None = None,
     ) -> LLMResponse:
         del tools, max_tokens, temperature
         request = tuple(messages)
-        if _is_memory_request(request):
+        if response_schema is not None:
             self.memory_requests.append(request)
             self.memory_started.set()
             self._active_memory_calls += 1
@@ -636,7 +639,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_next_turn_reads_updated_workspace_memory_with_the_same_prefix(self) -> None:
         store = MemoryStore(self._temporary_directory.name)
-        store.write("Old preference.")
+        seed(store, "Old preference.")
         provider = ScriptedProvider((LLMResponse(content="First."), LLMResponse(content="Second.")))
         loop = AgentLoop(
             AgentRunner(), provider, ToolRegistry(), self._sessions,
@@ -644,25 +647,55 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         )
 
         await _dispatch(loop, "First question.", "test", "chat-1", "session-1")
-        store.write("New preference.")
+        seed(store, "New preference.", replace_id=1)
         await _dispatch(loop, "Second question.", "test", "chat-1", "session-1")
 
         first, second = (call[0].content for call in provider.complete_calls)
         header = "## Long-term Memory\n\n"
-        self.assertTrue(first.endswith(header + "Old preference."))
+        self.assertTrue(first.endswith(header + "- [decision] Old preference."))
         self.assertEqual(second, first.removesuffix("Old preference.") + "New preference.")
+
+    async def test_corrected_decision_is_recalled_by_a_new_session_after_restart(self) -> None:
+        workspace = self._temporary_directory.name
+
+        async def turn(session_key, question, operations):
+            store = MemoryStore(workspace)
+            provider = BackgroundMemoryProvider(
+                (LLMResponse(content="OK"),),
+                LLMResponse(content=json.dumps({"operations": operations})),
+            )
+            loop = AgentLoop(
+                AgentRunner(), provider, ToolRegistry(), self._sessions, ContextBuilder(workspace),
+                memory_store=store, memory_consolidator=MemoryConsolidator(provider, store),
+            )
+            await _dispatch(loop, question, "test", session_key, session_key)
+            await loop.wait_for_memory_consolidations()
+            await loop.close()
+            return provider.normal_calls[0][0].content
+
+        await turn("a", "Use Redis.", [addition("Use Redis.")])
+        correction = addition("Use local cache.") | {"op": "replace", "target_id": 1}
+        await turn("b", "Switch to local cache.", [correction])
+        prompt = await turn("c", "Which cache do we use?", [])
+        self.assertIn("Use local cache.", prompt)
+        self.assertNotIn("Redis", prompt)
+        self.assertIn("事件 2 · 消息 0（会话 b）", MemoryStore(workspace).read(include_sources=True))
+        self.assertEqual(self._sessions.get_or_create("b").messages[0].content, "Switch to local cache.")
 
     async def test_records_completed_internal_inbound_requests(self) -> None:
         sources = ("cron", "subagent", "goal")
         provider = ScriptedProvider(
             tuple(LLMResponse(content=f"{source} answer.") for source in sources)
         )
+        store = MemoryStore(self._temporary_directory.name)
         loop = AgentLoop(
             AgentRunner(),
             provider,
             ToolRegistry(),
             self._sessions,
             ContextBuilder(self._temporary_directory.name),
+            memory_store=store,
+            memory_consolidator=MemoryConsolidator(provider, store),
         )
 
         for source in sources:
@@ -685,6 +718,8 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
             with self.subTest(source=source):
                 saved_session = self._sessions.get_or_create(session_key)
                 self.assertIsNotNone(saved_session.last_request_at)
+        self.assertIsNone(store.next_event())
+        self.assertEqual(len(provider.complete_calls), 3)
 
     async def test_replaces_a_legacy_persisted_system_message(self) -> None:
         previous_history = (
@@ -734,7 +769,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = BackgroundMemoryProvider(
             (LLMResponse(content="Current answer."),),
-            LLMResponse(content="The user prefers concise answers."),
+            LLMResponse(content=json.dumps({"operations": [addition("The user prefers concise answers.")]})),
             block_memory=True,
         )
         store = MemoryStore(self._temporary_directory.name)
@@ -762,21 +797,12 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
                 AIMessage(content="Current answer."),
             ),
         )
-        events = store.read_events_after(0)
-        self.assertEqual(len(events), 1)
-        self.assertEqual(events[0].session_key, "session-1")
-        self.assertEqual(
-            events[0].messages,
-            (
-                HumanMessage(content="Current question."),
-                AIMessage(content="Current answer."),
-            ),
-        )
-        self.assertFalse(any(isinstance(message, SystemMessage) for message in events[0].messages))
-        self.assertNotIn(
-            "Internal session summary.",
-            tuple(message.content for message in events[0].messages),
-        )
+        event = store.next_event()
+        self.assertEqual(event.session_key, "session-1")
+        self.assertEqual(event.messages, (
+            {"role": "user", "content": "Current question."},
+            {"role": "assistant", "content": "Current answer."},
+        ))
         await asyncio.wait_for(provider.memory_started.wait(), timeout=1)
         self.assertEqual(store.read(), "")
         request = provider.memory_requests[0]
@@ -786,8 +812,8 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         provider.release_memory()
         await loop.wait_for_memory_consolidations()
 
-        self.assertEqual(store.read(), "The user prefers concise answers.")
-        self.assertEqual(store.read_cursor(), 1)
+        self.assertIn("The user prefers concise answers.", store.read())
+        self.assertIsNone(store.next_event())
         self.assertEqual(len(provider.normal_calls), 1)
         self.assertEqual(len(provider.memory_requests), 1)
 
@@ -812,7 +838,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0)
 
         self.assertEqual(provider.memory_requests, [])
-        self.assertEqual(store.read_events_after(0), ())
+        self.assertIsNone(store.next_event())
 
     async def test_memory_failure_does_not_affect_the_saved_user_result(self) -> None:
         provider = BackgroundMemoryProvider(
@@ -835,8 +861,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.content, "Current answer.")
         self.assertEqual(store.read(), "")
-        self.assertEqual(store.read_cursor(), 0)
-        self.assertEqual(len(store.read_events_after(0)), 1)
+        self.assertIsNotNone(store.next_event())
         self.assertEqual(
             self._sessions.get_or_create("session-1").messages,
             (
@@ -851,7 +876,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
                 LLMResponse(content="First answer."),
                 LLMResponse(content="Second answer."),
             ),
-            LLMResponse(content="Stable project convention."),
+            LLMResponse(content='{"operations":[]}'),
             block_memory=True,
         )
         store = MemoryStore(self._temporary_directory.name)
@@ -879,11 +904,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(provider.maximum_concurrent_memory_calls, 1)
         self.assertEqual(len(provider.memory_requests), 2)
-        self.assertEqual(
-            tuple(event.session_key for event in store.read_events_after(0)),
-            ("session-1", "session-2"),
-        )
-        self.assertEqual(store.read_cursor(), 2)
+        self.assertIsNone(store.next_event())
         self.assertIn('"content":"First question."', provider.memory_requests[0][1].content)
         self.assertIn('"content":"Second question."', provider.memory_requests[1][1].content)
 
@@ -910,12 +931,11 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(provider.memory_finished.is_set())
         self.assertEqual(store.read(), "")
-        self.assertEqual(store.read_cursor(), 0)
-        self.assertEqual(len(store.read_events_after(0)), 1)
+        self.assertIsNotNone(store.next_event())
 
     async def test_recreated_loop_resumes_unprocessed_memory_events_on_startup(self) -> None:
         store = MemoryStore(self._temporary_directory.name)
-        event = store.append_event(
+        store.append_event(
             "session-1",
             (
                 HumanMessage(content="Remember this decision."),
@@ -924,7 +944,7 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         )
         provider = BackgroundMemoryProvider(
             (),
-            LLMResponse(content="A durable project decision."),
+            LLMResponse(content=json.dumps({"operations": [addition("A durable project decision.")]})),
         )
         loop = AgentLoop(
             AgentRunner(),
@@ -941,8 +961,8 @@ class AgentLoopTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(provider.memory_started.wait(), timeout=1)
         await loop.wait_for_memory_consolidations()
 
-        self.assertEqual(store.read_cursor(), event.event_id)
-        self.assertEqual(store.read(), "A durable project decision.")
+        self.assertIsNone(store.next_event())
+        self.assertIn("A durable project decision.", store.read())
 
         run_task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -1124,9 +1144,3 @@ async def _dispatch(
             raise AssertionError("/stop must parse as a command")
         return await loop._run_stop_command(inbound, invocation)
     return await loop._dispatch_non_stop_message(inbound, invocation)
-
-
-def _is_memory_request(messages: tuple[BaseMessage, ...]) -> bool:
-    return bool(messages) and isinstance(messages[0], SystemMessage) and messages[0].content.startswith(
-        "Maintain the long-term memory"
-    )

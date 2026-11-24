@@ -71,7 +71,7 @@ class ContextBuilder:
             active_skills = self._build_active_skill_context(user_content)
             if active_skills:
                 sections.append(active_skills)
-        memory = self._memory_store.read()
+        memory = self._memory_store.read(token_budget=1024)
         if memory:
             sections.append(f"## Long-term Memory\n\n{memory}")
         return "\n\n".join(sections)

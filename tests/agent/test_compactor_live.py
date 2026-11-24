@@ -7,7 +7,13 @@ from urllib.parse import urlsplit
 
 from nanobot.config import ProviderConfig
 from nanobot.config.loader import load_file_config
-from nanobot.providers import AIMessage, HumanMessage, ToolCallRequest, ToolMessage, create_default_provider_factory
+from nanobot.providers import (
+    AIMessage,
+    HumanMessage,
+    ToolCallRequest,
+    ToolMessage,
+    create_default_provider_factory,
+)
 from nanobot.session import Session, SessionCompactor
 from nanobot.session.tokens import estimate_messages_tokens
 

@@ -81,3 +81,16 @@ class ToolMessage(BaseMessage):
 # Keep the existing name available for type annotations during the migration
 # to the more specific message classes.
 Message = BaseMessage
+
+
+def message_record(message: BaseMessage) -> dict[str, Any]:
+    """Serialize message content and tool metadata for use as evidence."""
+    record: dict[str, Any] = {"role": message.role, "content": message.content}
+    if isinstance(message, AIMessage) and message.tool_calls:
+        record["tool_calls"] = [
+            {"id": call.id, "name": call.name, "arguments": dict(call.arguments)}
+            for call in message.tool_calls
+        ]
+    elif isinstance(message, ToolMessage):
+        record["tool_call_id"] = message.tool_call_id
+    return record

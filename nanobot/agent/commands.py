@@ -308,7 +308,7 @@ class CommandRouter:
         store = context.memory_store
         if store is None:
             return "当前未配置长期记忆。"
-        content = store.read()
+        content = store.read(include_sources=True)
         if not content:
             return "当前 workspace 还没有长期记忆。"
         if len(content) > self._memory_output_limit:

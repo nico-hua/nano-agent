@@ -59,4 +59,4 @@ read_session(session_id="@current", message_index=12, limit=1)
 - **可供下一轮复用的摘要**与 `summary_until` 写入 Session 头部。自动压缩只有在边界落在此前已保存的完整轮次之间或已保存历史末尾时，才产生可持久化的摘要。覆盖本轮工具结果的摘要只在当前运行中使用。`/compact` 成功后直接保存整理过的 Session。
 - **失败或取消**时保留已保存的原文和摘要边界。如果模型返回截断、拒答、非法 JSON 或无效引用，或者压缩后的请求仍然超出预算，Runner 会结束本轮并报告上下文窗口错误。
 
-工作区的 `memory/history.jsonl` 是长期记忆整理的事件队列，`.memory_cursor` 记录该队列的消费进度。排查某个会话为什么从索引 8 开始发送原文，应查看该 Session 头部的 `summary_until`。[轮次保存](../nanobot/agent/loop.py) · [Session 数据模型](../nanobot/session/models.py)
+工作区的 `memory/memory.sqlite3` 单独保存长期记忆及逐轮事件处理状态。排查某个会话为什么从索引 8 开始发送原文，应查看该 Session 头部的 `summary_until`。[轮次保存](../nanobot/agent/loop.py) · [Session 数据模型](../nanobot/session/models.py)

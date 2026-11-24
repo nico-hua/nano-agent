@@ -310,9 +310,10 @@ class HistoryProvider(ScriptedProvider):
         tools: Sequence[Tool] | None = None,
         max_tokens: int | None = None,
         temperature: float | None = None,
+        response_schema: dict | None = None,
     ) -> LLMResponse:
-        if tools is None:  # Background memory consolidation.
-            return LLMResponse(content="")
+        if response_schema is not None:  # Background memory consolidation.
+            return LLMResponse(content='{"operations":[]}')
         latest = messages[-1]
         if isinstance(latest, HumanMessage):
             return LLMResponse(tool_calls=(ToolCallRequest("search", "search_sessions", {"query": "Redis"}),))

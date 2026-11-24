@@ -15,6 +15,8 @@ from nanobot.providers import (
     ToolCallRequest,
     ToolMessage,
 )
+from nanobot.memory import MemoryStore
+from tests.memory.fixtures import seed
 from nanobot.session import Session
 
 
@@ -62,7 +64,7 @@ class ContextBuilderTest(unittest.TestCase):
         self.assertLess(prompt.index("Workspace rules."), prompt.index("## Available Skills"))
         self.assertLess(prompt.index("## Available Skills"), prompt.index("Skill body."))
         self.assertTrue(prompt.endswith(
-            "[/Active Skills]\n\n## Long-term Memory\n\nCurrent preference."
+            "[/Active Skills]\n\n## Long-term Memory\n\n- [decision] Current preference."
         ))
 
     def test_uses_a_stable_context_file_order(self) -> None:
@@ -96,16 +98,12 @@ class ContextBuilderTest(unittest.TestCase):
 
         self.assertNotIn("## Long-term Memory", builder.build_system_prompt())
 
-        self._write_memory(" \n")
-
-        self.assertNotIn("## Long-term Memory", builder.build_system_prompt())
-
     def test_reloads_long_term_memory_for_each_system_prompt(self) -> None:
-        memory_path = self._write_memory("First memory.")
+        self._write_memory("First memory.")
         builder = ContextBuilder(self._workspace)
 
         first_prompt = builder.build_system_prompt()
-        memory_path.write_text("Second memory.", encoding="utf-8")
+        seed(MemoryStore(self._workspace), "Second memory.", replace_id=1)
         second_prompt = builder.build_system_prompt()
 
         self.assertIn("First memory.", first_prompt)
@@ -462,11 +460,8 @@ class ContextBuilderTest(unittest.TestCase):
         path.write_text(content, encoding="utf-8")
         return path
 
-    def _write_memory(self, content: str) -> Path:
-        path = self._workspace / "memory" / "MEMORY.md"
-        path.parent.mkdir(exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return path
+    def _write_memory(self, content: str) -> None:
+        seed(MemoryStore(self._workspace), content)
 
     def _write_skill(self, directory_name: str, content: str) -> Path:
         path = self._workspace / "skills" / directory_name / "SKILL.md"

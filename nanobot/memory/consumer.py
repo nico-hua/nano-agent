@@ -44,7 +44,7 @@ class MemoryEventConsumer:
         self.wake()
 
     def wake(self) -> None:
-        """Ensure one background task processes events after the current cursor."""
+        """Ensure one background task processes pending events in order."""
 
         if self._closed:
             return
@@ -81,23 +81,12 @@ class MemoryEventConsumer:
         try:
             while True:
                 self._wake_requested = False
-                cursor = self._store.read_cursor()
-                events = self._store.read_events_after(cursor)
-                if not events:
+                event = self._store.next_event()
+                if event is None:
                     return
-                outcome = await self._consolidator.consolidate_events(events)
+                outcome = await self._consolidator.consolidate_event(event)
                 if outcome is MemoryConsolidationOutcome.FAILED:
-                    logger.warning(
-                        "Long-term memory event batch consolidation failed "
-                        "(first_event_id=%d, last_event_id=%d, count=%d)",
-                        events[0].event_id,
-                        events[-1].event_id,
-                        len(events),
-                    )
                     return
-                # A successful update or intentional empty result means every
-                # event in this batch is fully processed. Only failures retry.
-                self._store.update_cursor(events[-1].event_id)
         except asyncio.CancelledError:
             raise
         except Exception:

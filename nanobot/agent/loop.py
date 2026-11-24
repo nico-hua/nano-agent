@@ -601,8 +601,7 @@ class AgentLoop:
                     history,
                     current_message,
                     completed_messages,
-                    is_goal_turn=is_goal_turn,
-                    hide_intermediate_messages=inbound.metadata.get("source") in {"cron", "subagent"},
+                    source=inbound.metadata.get("source"),
                     result=result,
                 )
                 if is_goal_turn and result.stop_reason == "max_iterations":
@@ -677,8 +676,7 @@ class AgentLoop:
         current_message: HumanMessage,
         completed_messages: tuple[BaseMessage, ...],
         *,
-        is_goal_turn: bool,
-        hide_intermediate_messages: bool,
+        source: object,
         result: AgentRunResult,
     ) -> Session:
         """Save one complete runner result, then trigger post-save work."""
@@ -689,7 +687,7 @@ class AgentLoop:
         turn_messages = _messages_for_persistence(
             current_message,
             completed_messages,
-            hide_intermediate_messages=hide_intermediate_messages,
+            hide_intermediate_messages=source in {"cron", "subagent"},
         )
         session = self._session_manager.get_or_create(session_key)
         if session.messages != history:
@@ -700,7 +698,7 @@ class AgentLoop:
             session.with_messages((*history, *turn_messages))
             .with_last_request_at(datetime.now(UTC))
         )
-        if is_goal_turn and result.stop_reason != "max_iterations":
+        if source == "goal" and result.stop_reason != "max_iterations":
             status: Literal["completed", "failed"] = (
                 "completed"
                 if result.content is not None and result.content.strip()
@@ -710,11 +708,8 @@ class AgentLoop:
 
         saved_session = self._session_manager.save(session)
         self._deleted_sessions.discard(session_key)
-        if self._memory_events is not None:
-            self._memory_events.append(
-                session_key,
-                turn_messages,
-            )
+        if self._memory_events is not None and source not in {"cron", "subagent", "goal"}:
+            self._memory_events.append(session_key, turn_messages)
         return saved_session
 
     def _lock_for(self, session_key: str) -> asyncio.Lock:

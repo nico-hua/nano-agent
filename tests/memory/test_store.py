@@ -1,96 +1,99 @@
-"""Focused tests for workspace long-term memory reads."""
+"""Transactional memory updates against a real workspace database."""
 
-from __future__ import annotations
-
+import json
+import sqlite3
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
-from unittest.mock import patch
 
 from nanobot.memory import MemoryStore
-from nanobot.providers import AIMessage, HumanMessage, SystemMessage
+from nanobot.memory.models import MemoryChanges
+from nanobot.providers import AIMessage, HumanMessage
+
+from .fixtures import addition, seed
 
 
 class MemoryStoreTest(unittest.TestCase):
-    def setUp(self) -> None:
-        self._temporary_directory = tempfile.TemporaryDirectory()
-        self._workspace = Path(self._temporary_directory.name)
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.workspace = Path(directory.name)
+        self.store = MemoryStore(self.workspace)
 
-    def tearDown(self) -> None:
-        self._temporary_directory.cleanup()
-
-    def test_reads_utf8_memory_file(self) -> None:
-        memory_path = self._workspace / "memory" / "MEMORY.md"
-        memory_path.parent.mkdir()
-        memory_path.write_text("用户偏好使用中文。", encoding="utf-8")
-
-        self.assertEqual(MemoryStore(self._workspace).read(), "用户偏好使用中文。")
-
-    def test_returns_empty_content_when_memory_is_missing_or_empty(self) -> None:
-        store = MemoryStore(self._workspace)
-
+    def test_cross_session_correction_and_retraction_preserve_sources_after_restart(self):
+        seed(self.store, "Use Redis.")
+        event = self.store.append_event("other", (HumanMessage("Use local cache."),))
+        change = addition("Use local cache.") | {"op": "replace", "target_id": 1}
+        changes = MemoryChanges.model_validate({"operations": [change]})
+        self.store.apply(event, changes)
+        self.store.apply(event, changes)
+        store = MemoryStore(self.workspace)
+        self.assertIsNone(store.next_event())
+        self.assertIn("Use local cache.", store.read(include_sources=True))
+        self.assertIn("事件 2 · 消息 0（会话 other）", store.read(include_sources=True))
+        self.assertNotIn("Redis", store.read())
+        self.assertEqual(len(store.active_memories()), 1)
+        event = store.append_event("other", (AIMessage("Still applicable?"), HumanMessage("Withdraw that decision.")))
+        store.apply(event, MemoryChanges.model_validate({"operations": [
+            {"op": "retract", "target_id": 2, "message_offset": 1}
+        ]}))
         self.assertEqual(store.read(), "")
+        with closing(sqlite3.connect(self.workspace / "memory" / "memory.sqlite3")) as db:
+            rows = db.execute("""
+                SELECT ended_message_offset, messages FROM memories
+                JOIN memory_events ON memory_events.id = memories.ended_event_id ORDER BY memories.id
+            """).fetchall()
+        self.assertEqual([json.loads(snapshot)[offset]["content"] for offset, snapshot in rows],
+                         ["Use local cache.", "Withdraw that decision."])
 
-        memory_path = self._workspace / "memory" / "MEMORY.md"
-        memory_path.parent.mkdir()
-        memory_path.write_text(" \n", encoding="utf-8")
+    def test_event_snapshot_identifies_original_even_after_session_index_reuse(self):
+        seed(self.store, "Use Redis.")
+        seed(self.store, "User also prefers Chinese.")
+        output = self.store.read(include_sources=True)
+        self.assertIn("事件 1 · 消息 0（会话 chat）", output)
+        self.assertIn("事件 2 · 消息 0（会话 chat）", output)
+        with closing(sqlite3.connect(self.workspace / "memory" / "memory.sqlite3")) as db:
+            first = db.execute("SELECT messages FROM memory_events WHERE id = 1").fetchone()
+        self.assertEqual(json.loads(first[0])[0]["content"], "Use Redis.")
 
-        self.assertEqual(store.read(), "")
+    def test_credential_bearing_turn_leaves_no_durable_memory_event(self):
+        event = self.store.append_event("chat", (
+            HumanMessage("Set api_key=example-test-key"),
+            AIMessage("I have saved example-test-key."),
+        ))
+        self.assertIsNone(event)
+        self.assertIsNone(self.store.next_event())
 
-    def test_writes_memory_that_a_new_store_can_read(self) -> None:
-        store = MemoryStore(self._workspace)
+    def test_bad_target_or_evidence_rolls_back_entire_event(self):
+        event = self.store.append_event("chat", (HumanMessage("Confirmed."), AIMessage("Suggestion.")))
+        for second in (addition("second", 1), addition("second", -1), addition("second", 2),
+                       {"op": "retract", "target_id": 100, "message_offset": 0},
+                       {"op": "retract", "target_id": 1, "message_offset": 0}):
+            with self.subTest(second=second):
+                changes = MemoryChanges.model_validate({"operations": [addition("first"), second]})
+                with self.assertRaises(ValueError):
+                    self.store.apply(event, changes)
+                self.assertEqual(self.store.read(), "")
+                self.assertEqual(self.store.next_event(), event)
 
-        store.write("A durable user preference.")
+    def test_conflicting_replacement_rolls_back_prior_writes_and_pending_status(self):
+        seed(self.store, "Use Redis.")
+        seed(self.store, "Use local cache.")
+        event = self.store.append_event("new", (HumanMessage("Use local cache."),))
+        changes = MemoryChanges.model_validate({"operations": [
+            addition("Use another cache."),
+            addition("Use local cache.") | {"op": "replace", "target_id": 1},
+        ]})
+        with self.assertRaises(ValueError):
+            self.store.apply(event, changes)
+        self.assertEqual([m.text for m in self.store.active_memories()], ["Use local cache.", "Use Redis."])
+        self.assertEqual(self.store.next_event(), event)
 
-        self.assertEqual(
-            MemoryStore(self._workspace).read(),
-            "A durable user preference.",
-        )
-
-    def test_write_failure_keeps_existing_memory_file(self) -> None:
-        store = MemoryStore(self._workspace)
-        store.write("Existing memory.")
-
-        with patch.object(Path, "replace", side_effect=OSError("replace failed")):
-            with self.assertRaises(OSError):
-                store.write("Replacement memory.")
-
-        self.assertEqual(store.read(), "Existing memory.")
-
-    def test_appends_events_and_reads_only_events_after_cursor(self) -> None:
-        store = MemoryStore(self._workspace)
-        first_event = store.append_event(
-            "session-1",
-            (HumanMessage(content="First question."), AIMessage(content="First answer.")),
-        )
-        recreated_store = MemoryStore(self._workspace)
-        second_event = recreated_store.append_event(
-            "session-2",
-            (HumanMessage(content="Second question."), AIMessage(content="Second answer.")),
-        )
-
-        self.assertEqual(first_event.event_id, 1)
-        self.assertEqual(second_event.event_id, 2)
-        self.assertEqual(
-            recreated_store.read_events_after(0),
-            (first_event, second_event),
-        )
-        self.assertEqual(recreated_store.read_events_after(1), (second_event,))
-
-    def test_cursor_is_atomic_and_persists_for_a_recreated_store(self) -> None:
-        store = MemoryStore(self._workspace)
-        store.update_cursor(4)
-
-        self.assertEqual(MemoryStore(self._workspace).read_cursor(), 4)
-
-        with patch.object(Path, "replace", side_effect=OSError("replace failed")):
-            with self.assertRaises(OSError):
-                store.update_cursor(5)
-
-        self.assertEqual(MemoryStore(self._workspace).read_cursor(), 4)
-
-    def test_rejects_system_messages_from_memory_events(self) -> None:
-        store = MemoryStore(self._workspace)
-
-        with self.assertRaisesRegex(ValueError, "system messages"):
-            store.append_event("session-1", (SystemMessage(content="Internal prompt."),))
+    def test_duplicate_add_is_idempotent_and_prompt_budget_keeps_whole_items(self):
+        seed(self.store, "Use Redis.")
+        seed(self.store, "Use Redis.")
+        self.assertEqual(len(self.store.active_memories()), 1)
+        seed(self.store, "A" * 1000)
+        self.assertIn("Use Redis.", self.store.read(token_budget=30))
+        self.assertNotIn("AAAA", self.store.read(token_budget=30))

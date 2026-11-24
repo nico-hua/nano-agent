@@ -291,13 +291,14 @@ AgentRunner 返回完整结果后，AgentLoop 一次性保存 user、assistant�
 | Session.messages | workspace/sessions/*.jsonl | 当前会话完整短期历史与工具链 | 是，按预算使用摘要与近期原文 |
 | last_request_at | Session JSONL header | 记录最近成功请求时间，供历史检索排序 | 否 |
 | summary / summary_until | Session JSONL header | 压缩较早会话历史 | 是，作为独立 HumanMessage 放在近期原文之前 |
-| MEMORY.md | workspace/memory/MEMORY.md | workspace 级稳定事实、偏好、约定 | 是，每次新读入 system prompt |
-| history.jsonl | workspace/memory/history.jsonl | 长期记忆整理的持久事件队列 | 否 |
-| .memory_cursor | workspace/memory/.memory_cursor | 最后成功消费的事件 ID | 否 |
+| memories | workspace/memory/memory.sqlite3 | 有效及已结束的偏好、事实、决策和来源 | 取有效条目，以约 1024 token 为限追加在系统提示词末尾 |
+| memory_events | 同一 SQLite 库 | 逐轮消息快照和处理状态 | 否 |
 
-**MemoryStore**（**nanobot/memory/store.py**）负责这些文件的读写。**MemoryEventConsumer** 在完整 turn 保存后追加不可变消息快照、后台消费，并在启动时继续处理 cursor 之后的遗留事件。
+会话 JSONL 保存成功后，AgentLoop 将普通用户轮次的可见消息按顺序写入事件快照。自动任务、不可见消息及检测到常见凭据格式的轮次不参与长期记忆抽取。每条记忆通过 `event_id` 和 `message_offset` 引用事件快照中的用户消息，从零开始计数。更正或撤回的证据使用 `ended_event_id` 和 `ended_message_offset`。会话清空或删除后，仍可从对应快照核验原文。会话保存和事件入队是两次写入，两者之间中断可能漏掉该轮。
 
-**MemoryConsolidator** 让 Provider 结合已有 MEMORY.md 与待处理事件生成完整替换内容。成功更新或明确返回空记忆时 cursor 才前移；失败时 cursor 保持不变，供下一次启动重试。长期记忆不会追加到 Session.messages，也不会和 Session 摘要相互覆盖。
+MemoryEventConsumer 在启动或新轮次入队时按 ID 顺序处理。每次请求包含一个轮次和本工作区全部有效条目的 ID、类型和正文。输入预算为上下文窗口减去默认输出预留，并计入结构化输出 schema 的估算成本。超预算时保留队首事件并记录原因，后续事件等待其完成。
+
+MemoryConsolidator 请求结构化的 `add`、`replace`、`retract` 操作。MemoryStore 校验当前轮次的用户消息下标、目标 ID 和活动状态，在同一事务内更新条目并标记事件完成。合法的空操作列表也标记完成。无效或截断的回复、校验失败及写入失败均保留待处理状态，后续唤醒时重试。当前采用单用户、单工作区范围，不回填已有会话。
 
 ### 6.5 Skills 是静态指令，不是可执行插件
 
@@ -320,12 +321,12 @@ Skill 文件从不执行命令、脚本或外部程序，也不会写入 Session
 
 | 命令 | 处理边界 |
 | --- | --- |
-| /new | 重置当前 Session 的历史、摘要与终态 Goal；不删除 MEMORY.md；active Goal 时拒绝 |
+| /new | 重置当前 Session 的历史、摘要和终态 Goal，保留长期记忆。active Goal 时拒绝 |
 | /stop | 立即取消当前 session 的 Agent turn，不等待 session 锁 |
 | /help | 根据注册表生成说明 |
 | /goal、/goal status、/goal stop | 创建、查询或取消当前 session 的 Goal |
 | /compact | 调用现有 SessionCompactor 整理当前 session |
-| /memory | 只读且限长展示当前 workspace 的 MEMORY.md |
+| /memory | 限长展示工作区的有效记忆及来源 |
 | /subagents、status、cancel | 查询或取消当前 session 所属后台 Subagent |
 
 命令本身不写入 Session.messages，也不产生长期记忆事件。/goal 的后续 Goal 工作是例外：它先保存 GoalState，再通过 MessageBus 发布 source 为 **goal** 的内部 InboundMessage。
@@ -499,7 +500,7 @@ HTTP API
 7. **Tool 不依赖具体 Channel。** 主动消息也经 MessageBus 投递，不直接调用 QQ SDK 或 WebSocket。
 8. **Goal 权限按 Session 隔离。** Goal 模式禁用 create_goal，普通模式禁用 update_goal；/goal stop 必须保存终态并取消任务。
 9. **后台结果回到原路由。** Cron、Subagent 和 MessageTool 保留原 session/channel/chat/sender，不能投递给其他会话。
-10. **Memory cursor 只在确认后推进。** MEMORY.md 更新成功或模型明确无记忆可写时才跳过事件；失败必须保留 cursor。
+10. **逐轮确认记忆事件。** 记忆变更与事件完成标记在同一 SQLite 事务提交。
 11. **WebSocket 断开不会遗留任务。** 断开触发同一 session 的 /stop 路径，Channel.stop 清理连接和 handler。
 12. **敏感值不得外泄。** API key、QQ secret、授权 token、Authorization header 和消息内容不得写进日志、错误响应或文档示例。
 13. **可见性与完整历史分开处理。** `is_visible` 控制 API 摘要、Web UI 渲染和会话检索的消息筛选。隐藏消息仍保留在 Session 和 Provider 上下文中。cron 与异步 subagent turn 只展示本轮最后一条 AIMessage，其他来源默认展示。
@@ -531,7 +532,7 @@ HTTP API
 - Provider 抽象、OpenAI-compatible 与 Anthropic-compatible 实现、文本流式回调、单次请求超时、有限 transient retry 与统一错误结果。
 - Tool 基础设施、builtin 文件/命令/网络/消息/Goal/Cron/Spawn 工具、MCP 动态工具，以及显式只读工具的有序批次并行。
 - JSONL Session、跨会话关键词检索和原文回查、按调用预算压缩上下文、Session 摘要、持久化 GoalState。
-- MEMORY.md、持久化记忆事件队列与 cursor 恢复。
+- SQLite 长期记忆、原文溯源和持久队列恢复。
 - CommandRouter、Goal continuation、Goal 用户输入注入与会话级停止。
 - 可持久化 at/every/Cron 表达式任务、按时区计算与其进入 Agent 的链路。
 - 同步与后台 Subagent，以及状态与消息回传。

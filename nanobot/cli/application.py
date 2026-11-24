@@ -132,6 +132,7 @@ class Application:
         self._memory_consolidator = MemoryConsolidator(
             self._provider,
             self._memory_store,
+            input_token_budget=input_budget,
         )
         self._mcp_provider = mcp_provider_factory(
             self._tool_registry,
